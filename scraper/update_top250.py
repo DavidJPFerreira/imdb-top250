@@ -1,6 +1,11 @@
 from datetime import datetime
-import pandas as pd
+import json
+from pathlib import Path
 import requests
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(exist_ok=True)
 
 GRAPHQL_URL = "https://api.graphql.imdb.com/"
 
@@ -16,7 +21,6 @@ HEADERS = {
     "Referer": "https://www.imdb.com/",
 }
 
-# Query GraphQL que pede exatamente todos os 15 campos de uma só vez
 CHART_QUERY = """
 query ($first: Int!, $after: String) {
   chartTitles(first: $first, after: $after, chart: {chartType: TOP_RATED_MOVIES}) {
@@ -28,63 +32,21 @@ query ($first: Int!, $after: String) {
       currentRank
       node {
         id
-        titleText {
-          text
-        }
-        originalTitleText {
-          text
-        }
-        releaseYear {
-          year
-        }
-        certificate {
-          rating
-        }
-        runtime {
-          seconds
-        }
-        ratingsSummary {
-          aggregateRating
-          voteCount
-        }
-        metacritic {
-          metascore {
-            score
-          }
-        }
-        primaryImage {
-          url
-        }
-        titleGenres {
-          genres {
-            genre {
-              text
-            }
-          }
-        }
+        titleText { text }
+        originalTitleText { text }
+        releaseYear { year }
+        certificate { rating }
+        runtime { seconds }
+        ratingsSummary { aggregateRating voteCount }
+        metacritic { metascore { score } }
+        primaryImage { url }
+        titleGenres { genres { genre { text } } }
         principalCredits {
-          category {
-            text
-            id
-          }
-          credits {
-            name {
-              nameText {
-                text
-              }
-            }
-          }
+          category { text id }
+          credits { name { nameText { text } } }
         }
-        spokenLanguages {
-          spokenLanguages {
-            text
-          }
-        }
-        countriesOfOrigin {
-          countries {
-            text
-          }
-        }
+        spokenLanguages { spokenLanguages { text } }
+        countriesOfOrigin { countries { text } }
       }
     }
   }
@@ -100,38 +62,24 @@ def format_runtime(seconds):
     return f"{hours}h {mins}m"
 
 
-def parse_movie_node(rank, node):
+def parse_movie_node(rank, node, today):
     imdb_id = node.get("id")
-
-    # Nome original (com fallback para o título principal)
     original_title = (node.get("originalTitleText") or {}).get("text") or (
         node.get("titleText") or {}
     ).get("text")
-
-    # Ano
     year = (node.get("releaseYear") or {}).get("year")
-
-    # Classificação Etária (Maiores de que idade)
     certificate = (node.get("certificate") or {}).get("rating") or "Not Rated"
 
-    # Duração
     seconds = (node.get("runtime") or {}).get("seconds")
     duration = format_runtime(seconds)
+    duration_minutes = (seconds // 60) if seconds else None
 
-    # Pontuação e Contagem de votos
     ratings = node.get("ratingsSummary") or {}
     rating = ratings.get("aggregateRating")
     vote_count = ratings.get("voteCount")
-
-    # Metascore
-    metascore = ((node.get("metacritic") or {}).get("metascore") or {}).get(
-        "score"
-    )
-
-    # Capa do filme
+    metascore = ((node.get("metacritic") or {}).get("metascore") or {}).get("score")
     poster_url = (node.get("primaryImage") or {}).get("url")
 
-    # Géneros
     genres_list = (node.get("titleGenres") or {}).get("genres") or []
     genres = [
         g["genre"]["text"]
@@ -139,12 +87,10 @@ def parse_movie_node(rank, node):
         if g.get("genre") and g["genre"].get("text")
     ]
 
-    # Diretor, Writers e Stars
     directors, writers, stars = [], [], []
     for group in node.get("principalCredits") or []:
         cat_id = ((group.get("category") or {}).get("id") or "").lower()
         cat_text = ((group.get("category") or {}).get("text") or "").lower()
-
         names = [
             c["name"]["nameText"]["text"]
             for c in (group.get("credits") or [])
@@ -152,7 +98,6 @@ def parse_movie_node(rank, node):
             and c["name"].get("nameText")
             and c["name"]["nameText"].get("text")
         ]
-
         if "director" in cat_id or "director" in cat_text:
             directors.extend(names)
         elif "writer" in cat_id or "writer" in cat_text:
@@ -160,100 +105,83 @@ def parse_movie_node(rank, node):
         elif "cast" in cat_id or "star" in cat_text or "actor" in cat_text:
             stars.extend(names)
 
-    # Idiomas (Language)
     lang_list = (node.get("spokenLanguages") or {}).get("spokenLanguages") or []
     languages = [l.get("text") for l in lang_list if l.get("text")]
 
-    # País de Origem (Country of origin)
     country_list = (node.get("countriesOfOrigin") or {}).get("countries") or []
     countries = [c.get("text") for c in country_list if c.get("text")]
 
     return {
-        "Rank": rank,
-        "Nome Original": original_title,
-        "Ano": year,
-        "Classificação Etária": certificate,
-        "Duração": duration,
-        "Pontuação IMDb": rating,
-        "Contagem de Votos": vote_count,
-        "Metascore": metascore,
-        "Diretor": ", ".join(dict.fromkeys(directors)),
-        "Writers": ", ".join(dict.fromkeys(writers)),
-        "Stars": ", ".join(dict.fromkeys(stars)),
-        "Género": ", ".join(genres),
-        "Language": ", ".join(languages),
-        "Country of Origin": ", ".join(countries),
-        "Link": f"https://www.imdb.com/title/{imdb_id}/" if imdb_id else None,
-        "Capa": poster_url,
+        "rank": rank,
+        "imdb_id": imdb_id,
+        "original_title": original_title,
+        "year": year,
+        "certificate": certificate,
+        "duration": duration,
+        "duration_minutes": duration_minutes,
+        "rating": rating,
+        "vote_count": vote_count,
+        "metascore": metascore,
+        "directors": list(dict.fromkeys(directors)),
+        "writers": list(dict.fromkeys(writers)),
+        "stars": list(dict.fromkeys(stars)),
+        "genres": genres,
+        "languages": languages,
+        "countries": countries,
+        "link": f"https://www.imdb.com/title/{imdb_id}/" if imdb_id else None,
+        "poster_url": poster_url,
+        "data_extracao": today,
     }
 
 
 def fetch_all_top_250():
     movies = []
     after_cursor = None
-    batch_size = 50  # Pede 50 filmes de cada vez (5 pedidos = 250 filmes)
+    batch_size = 50
+    today = datetime.now().strftime("%Y-%m-%d")
 
     while len(movies) < 250:
         payload = {
             "query": CHART_QUERY,
             "variables": {"first": batch_size, "after": after_cursor},
         }
-
-        response = requests.post(
-            GRAPHQL_URL, json=payload, headers=HEADERS, timeout=20
-        )
-
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"Erro HTTP {response.status_code}: {response.text[:300]}"
-            )
+        response = requests.post(GRAPHQL_URL, json=payload, headers=HEADERS, timeout=20)
+        response.raise_for_status()
 
         data = response.json()
-        if "errors" in data:
-            raise RuntimeError(f"Erro GraphQL: {data['errors']}")
-
         chart_data = (data.get("data") or {}).get("chartTitles") or {}
         edges = chart_data.get("edges") or []
-
         if not edges:
             break
 
         for edge in edges:
-            rank = edge.get("currentRank")
-            node = edge.get("node") or {}
-            movies.append(parse_movie_node(rank, node))
+            movies.append(
+                parse_movie_node(edge.get("currentRank"), edge.get("node") or {}, today)
+            )
 
         print(f"Progresso: {len(movies)}/250 filmes recolhidos...")
-
         page_info = chart_data.get("pageInfo") or {}
         if not page_info.get("hasNextPage"):
             break
         after_cursor = page_info.get("endCursor")
 
-    return movies
+    return movies, today
 
 
 def main():
-    print("A recolher o Top 250 completo via IMDb GraphQL API...")
-    dataset = fetch_all_top_250()
+    print("A recolher o Top 250 via IMDb GraphQL API...")
+    dataset, today = fetch_all_top_250()
 
-    if not dataset:
-        print("Atenção: Nenhum filme foi retornado.")
-        return
+    file_dated = DATA_DIR / f"imdb_top250_detalhado_{today}.json"
+    file_latest = DATA_DIR / "imdb_top250_detalhado_latest.json"
 
-    df = pd.DataFrame(dataset)
-    today = datetime.now().strftime("%Y-%m-%d")
-    df["Data_Extracao"] = today
+    with open(file_dated, "w", encoding="utf-8") as f:
+        json.dump(dataset, f, ensure_ascii=False, indent=2)
 
-    filename_dated = f"imdb_top250_detalhado_{today}.csv"
-    filename_latest = "imdb_top250_detalhado_latest.csv"
+    with open(file_latest, "w", encoding="utf-8") as f:
+        json.dump(dataset, f, ensure_ascii=False, indent=2)
 
-    df.to_csv(filename_dated, index=False, encoding="utf-8-sig")
-    df.to_csv(filename_latest, index=False, encoding="utf-8-sig")
-
-    print(
-        f"\nSucesso! {len(df)} filmes guardados em:\n- {filename_latest}\n- {filename_dated}"
-    )
+    print(f"\nSucesso! {len(dataset)} filmes guardados em JSON:\n- {file_latest}\n- {file_dated}")
 
 
 if __name__ == "__main__":
