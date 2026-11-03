@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <title>Filtros - Vez de {{ player[2] }}</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            background-color: #121212; color: #fff;
+            font-family: 'Segoe UI', sans-serif; margin: 0; padding: 30px 20px;
+        }
+        .container {
+            max-width: 740px; margin: 0 auto; background: #1e1e1e;
+            padding: 30px; border-radius: 14px; border: 1px solid #333;
+        }
+        .turn-banner {
+            background: #f5c518; color: #000; padding: 12px 20px;
+            border-radius: 8px; font-weight: bold; font-size: 1.25rem;
+            margin-bottom: 25px; text-align: center;
+        }
+        .section { margin-bottom: 26px; text-align: left; position: relative; }
+        .section h3 {
+            margin: 0 0 10px 0; color: #f5c518; font-size: 1.05rem;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .section small { color: #aaa; font-weight: normal; font-size: 0.88rem; }
+        .chips { display: flex; flex-wrap: wrap; gap: 10px; }
+        .chip input { display: none; }
+        .chip span {
+            display: inline-block; padding: 10px 16px; background: #2b2b2b;
+            border: 2px solid #444; border-radius: 8px; cursor: pointer;
+            font-weight: 600; transition: all 0.15s; user-select: none;
+        }
+        .chip input:checked + span {
+            background: #f5c518; color: #000; border-color: #f5c518;
+        }
+        .info-icon {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 22px; height: 22px; border-radius: 50%;
+            background: #333; color: #f5c518; border: 1px solid #f5c518;
+            font-size: 0.82rem; font-weight: bold; cursor: pointer;
+            user-select: none;
+        }
+        .legend-box {
+            display: none; background: #161616; border: 1px solid #f5c518;
+            border-radius: 10px; padding: 14px 18px; margin-bottom: 14px;
+            font-size: 0.88rem; line-height: 1.55; color: #ddd;
+        }
+        .legend-box.show { display: block; }
+        .legend-box ul { margin: 6px 0 0 0; padding-left: 18px; }
+        .legend-box strong { color: #f5c518; }
+        .submit-btn {
+            width: 100%; background: #f5c518; color: #000; font-weight: bold;
+            font-size: 1.15rem; padding: 15px; border: none; border-radius: 8px;
+            cursor: pointer; margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="turn-banner">
+            🎮 Vez de {{ player[2] }} (Jogador {{ player[1] }} de {{ total_players }})
+        </div>
+
+        <form action="/session/{{ session_id }}/filters" method="POST">
+            <input type="hidden" name="id_player" value="{{ player[0] }}">
+
+            <!-- 1. DÉCADAS (0 a 3 opções; 0 = todas) -->
+            <div class="section">
+                <h3>1. Ano do Filme <small>(Escolhe de 0 a 3 décadas — vazio inclui todas)</small></h3>
+                <div class="chips">
+                    {% for dec in decades %}
+                    <label class="chip">
+                        <input type="checkbox" name="decades" value="{{ dec }}" onchange="limitCheckboxes('decades', 3, this)">
+                        <span>{{ dec }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- 2. DURAÇÃO (0 a 2 opções; 0 = todas) -->
+            <div class="section">
+                <h3>2. Duração do Filme <small>(Escolhe de 0 a 2 opções — vazio inclui todas)</small></h3>
+                <div class="chips">
+                    <label class="chip">
+                        <input type="checkbox" name="duration" value="<1h30" onchange="limitCheckboxes('duration', 2, this)">
+                        <span>&lt; 1h30</span>
+                    </label>
+                    <label class="chip">
+                        <input type="checkbox" name="duration" value="=2h" onchange="limitCheckboxes('duration', 2, this)">
+                        <span>= 2h</span>
+                    </label>
+                    <label class="chip">
+                        <input type="checkbox" name="duration" value="=2h30" onchange="limitCheckboxes('duration', 2, this)">
+                        <span>= 2h30</span>
+                    </label>
+                    <label class="chip">
+                        <input type="checkbox" name="duration" value=">2h30" onchange="limitCheckboxes('duration', 2, this)">
+                        <span>&gt; 2h30</span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- 3. RESTRIÇÃO DE IDADE -->
+            <div class="section">
+                <h3>
+                    3. Restrição de Idade
+                    <span class="info-icon" onclick="toggleLegend()" title="Ver legenda das restrições">?</span>
+                </h3>
+                <div id="cert-legend" class="legend-box">
+                    <strong>Legenda das Classificações Etárias:</strong>
+                    <ul>
+                        <li><strong>G:</strong> Público Geral (Todas as idades)</li>
+                        <li><strong>PG:</strong> Recomendado acompanhamento parental</li>
+                        <li><strong>PG-13:</strong> Desaconselhado para menores de 13 anos</li>
+                        <li><strong>R:</strong> Restrito (Menores de 17 anos requerem acompanhamento de adulto)</li>
+                        <li><strong>NC-17:</strong> Proibido para menores de 18 anos</li>
+                        <li><strong>TV-14:</strong> Inadequado para menores de 14 anos</li>
+                        <li><strong>TV-MA:</strong> Apenas para público adulto</li>
+                        <li><strong>Approved / Passed:</strong> Filmes clássicos aprovados para público geral</li>
+                    </ul>
+                </div>
+                <div class="chips">
+                    <label class="chip">
+                        <input type="radio" name="certificate" value="ANY" checked>
+                        <span>Qualquer Idade</span>
+                    </label>
+                    {% for cert in certificates %}
+                    <label class="chip">
+                        <input type="radio" name="certificate" value="{{ cert }}">
+                        <span>{{ cert }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- 4. RATING MÍNIMO -->
+            <div class="section">
+                <h3>4. Pontuação Mínima no IMDb</h3>
+                <div class="chips">
+                    <label class="chip">
+                        <input type="radio" name="rating" value="8.0" checked>
+                        <span>⭐ 8.0+</span>
+                    </label>
+                    <label class="chip">
+                        <input type="radio" name="rating" value="8.3">
+                        <span>⭐ 8.3+</span>
+                    </label>
+                    <label class="chip">
+                        <input type="radio" name="rating" value="8.5">
+                        <span>⭐ 8.5+</span>
+                    </label>
+                    <label class="chip">
+                        <input type="radio" name="rating" value="8.8">
+                        <span>⭐ 8.8+</span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- 5. GÉNERO PRINCIPAL (0 a 3 opções; 0 = todos) -->
+            <div class="section">
+                <h3>5. Género Principal <small>(Escolhe de 0 a 3 géneros — vazio inclui todos)</small></h3>
+                <div class="chips">
+                    {% for g in genres %}
+                    <label class="chip">
+                        <input type="checkbox" name="genres" value="{{ g }}" onchange="limitCheckboxes('genres', 3, this)">
+                        <span>{{ g }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <button type="submit" class="submit-btn">Confirmar Filtros de {{ player[2] }} ➔</button>
+        </form>
+    </div>
+
+    <script>
+        function limitCheckboxes(fieldName, maxAllowed, checkbox) {
+            const checked = document.querySelectorAll('input[name="' + fieldName + '"]:checked');
+            if (checked.length > maxAllowed) {
+                checkbox.checked = false;
+                alert('Podes escolher no máximo ' + maxAllowed + ' opções neste filtro!');
+            }
+        }
+        function toggleLegend() {
+            document.getElementById('cert-legend').classList.toggle('show');
+        }
+    </script>
+</body>
+</html>

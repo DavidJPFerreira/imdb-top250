@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <title>Resumo dos Filtros</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            background-color: #121212; color: #fff;
+            font-family: 'Segoe UI', sans-serif; padding: 40px 20px; text-align: center;
+        }
+        .box {
+            max-width: 820px; margin: 0 auto; background: #1e1e1e;
+            padding: 30px; border-radius: 14px; border: 1px solid #333;
+        }
+        h1 { color: #f5c518; margin-top: 0; font-size: 1.6rem; }
+        table {
+            width: 100%; border-collapse: collapse; margin: 20px 0;
+            background: #161616; border-radius: 8px; overflow: hidden;
+        }
+        th, td { padding: 12px; border-bottom: 1px solid #2e2e2e; text-align: center; }
+        th { background: #262626; color: #f5c518; }
+        .alert-ok {
+            background: #1b4332; border: 1px solid #40916c; padding: 18px;
+            border-radius: 10px; margin-top: 20px;
+        }
+        .alert-conflict {
+            background: #3b171b; border: 1px solid #e63946; padding: 20px;
+            border-radius: 10px; margin-top: 20px;
+        }
+        .stakes-grid {
+            display: flex; flex-direction: column; gap: 10px;
+            max-width: 520px; margin: 16px auto;
+        }
+        .stake-row {
+            display: flex; justify-content: space-between; align-items: center;
+            background: #222; padding: 10px 16px; border-radius: 8px;
+        }
+        select {
+            background: #141414; color: #f5c518; border: 1px solid #f5c518;
+            padding: 8px 12px; border-radius: 6px; font-weight: bold; font-size: 0.95rem;
+        }
+        select option:disabled {
+            color: #555; background: #1a1a1a;
+        }
+        .btn {
+            display: inline-block; background: #f5c518; color: #000;
+            font-weight: bold; padding: 12px 26px; border-radius: 8px;
+            text-decoration: none; border: none; font-size: 1.05rem; cursor: pointer;
+        }
+        .err-msg {
+            color: #ff8787; font-weight: bold; margin-bottom: 10px; display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>Escolhas dos Jogadores</h1>
+        <table>
+            <thead>
+                <tr>
+                    <th>Jogador</th>
+                    <th>Ano</th>
+                    <th>Duração</th>
+                    <th>Idade</th>
+                    <th>Rating</th>
+                    <th>Género</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for c in choices %}
+                <tr>
+                    <td><strong>{{ c[1] }}</strong></td>
+                    <td>{{ 'Todos' if c[2] == 'ANY' else c[2] }}</td>
+                    <td>{{ 'Todas' if c[3] == 'ANY' else c[3] }}</td>
+                    <td>{{ 'Qualquer' if c[4] == 'ANY' else c[4] }}</td>
+                    <td>⭐ {{ c[5] }}+</td>
+                    <td>{{ 'Todos' if c[6] == 'ANY' else c[6] }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if not had_conflict %}
+        <div class="alert-ok">
+            <h2 style="margin:0 0 12px 0;">✅ Filtros Aceites ({{ matching_count }} filmes disponíveis)</h2>
+            <a href="/session/{{ session_id }}/movies" class="btn">Avançar para os Filmes ➔</a>
+        </div>
+        {% else %}
+        <div class="alert-conflict">
+            <h2 style="margin:0 0 8px 0;">⚔️ Guerra no Jogo do Galo!</h2>
+            <p style="color:#ddd; font-size:0.95rem; margin:0 0 12px 0;">
+                Cada jogador escolhe <strong>um filtro diferente</strong> pelo qual quer lutar.<br>
+                Apenas o filtro do vencedor fica a 100% dele — todos os outros filtros são misturados!
+            </p>
+            <div id="dup-error" class="err-msg">Cada jogador tem de escolher um filtro diferente!</div>
+
+            <form action="/session/{{ session_id }}/tictactoe/start" method="POST" onsubmit="return validateUniqueStakes()">
+                {% set default_cats = ['genres', 'decades', 'duration', 'rating', 'certificate'] %}
+                <div class="stakes-grid">
+                    {% for c in choices %}
+                    {% set def_cat = default_cats[loop.index0] %}
+                    <div class="stake-row">
+                        <strong>🎮 {{ c[1] }} luta por:</strong>
+                        <select name="stake_{{ c[0] }}" class="stake-select" onchange="syncSelects()" required>
+                            <option value="genres" {% if def_cat == 'genres' %}selected{% endif %}>Género ({{ 'Todos' if c[6] == 'ANY' else c[6] }})</option>
+                            <option value="decades" {% if def_cat == 'decades' %}selected{% endif %}>Ano ({{ 'Todos' if c[2] == 'ANY' else c[2] }})</option>
+                            <option value="duration" {% if def_cat == 'duration' %}selected{% endif %}>Duração ({{ 'Todas' if c[3] == 'ANY' else c[3] }})</option>
+                            <option value="rating" {% if def_cat == 'rating' %}selected{% endif %}>Pontuação (⭐ {{ c[5] }}+)</option>
+                            <option value="certificate" {% if def_cat == 'certificate' %}selected{% endif %}>Idade ({{ 'Qualquer' if c[4] == 'ANY' else c[4] }})</option>
+                        </select>
+                    </div>
+                    {% endfor %}
+                </div>
+                <button type="submit" class="btn">Começar Jogo do Galo ⚔️</button>
+            </form>
+        </div>
+        {% endif %}
+    </div>
+
+    <script>
+        function syncSelects() {
+            const selects = Array.from(document.querySelectorAll('.stake-select'));
+            const chosen = selects.map(s => s.value);
+
+            selects.forEach((sel) => {
+                Array.from(sel.options).forEach(opt => {
+                    // Desativa a opção nos outros jogadores se já estiver escolhida por alguém
+                    opt.disabled = (opt.value !== sel.value && chosen.includes(opt.value));
+                });
+            });
+        }
+
+        function validateUniqueStakes() {
+            const selects = Array.from(document.querySelectorAll('.stake-select'));
+            const chosen = selects.map(s => s.value);
+            const unique = new Set(chosen);
+            if (unique.size !== chosen.length) {
+                document.getElementById('dup-error').style.display = 'block';
+                return false;
+            }
+            return true;
+        }
+
+        document.addEventListener('DOMContentLoaded', syncSelects);
+    </script>
+</body>
+</html>

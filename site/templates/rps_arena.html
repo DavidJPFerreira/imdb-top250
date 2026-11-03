@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <title>Pedra Papel Tesoura - Sessão #{{ session_id }}</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            background-color: #121212; color: #fff;
+            font-family: 'Segoe UI', sans-serif; text-align: center; padding: 30px 20px;
+        }
+        .arena {
+            max-width: 580px; margin: 0 auto; background: #1e1e1e;
+            padding: 30px; border-radius: 14px; border: 1px solid #333;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+        }
+        .stage-badge {
+            display: inline-block; background: #c92a2a; color: #fff;
+            padding: 6px 14px; border-radius: 20px; font-weight: bold;
+            margin-bottom: 12px; font-size: 0.9rem;
+        }
+        h1 { color: #f5c518; margin: 0 0 16px 0; font-size: 1.65rem; }
+        .matchup {
+            display: flex; justify-content: space-around; align-items: center;
+            background: #262626; padding: 14px; border-radius: 10px; margin-bottom: 22px;
+        }
+        .p-name { font-size: 1.15rem; font-weight: bold; }
+        .p1-col { color: #f5c518; }
+        .p2-col { color: #4dabf7; }
+        .prompt-box {
+            background: #161616; border: 1px solid #444; border-radius: 10px;
+            padding: 20px; margin-bottom: 20px;
+        }
+        .prompt-title { font-size: 1.2rem; font-weight: bold; margin-bottom: 16px; }
+        .choices { display: flex; justify-content: center; gap: 16px; }
+        .choice-btn {
+            background: #2b2b2b; border: 2px solid #555; color: #fff;
+            border-radius: 12px; padding: 16px 22px; cursor: pointer;
+            font-size: 1.05rem; font-weight: bold; transition: all 0.15s;
+        }
+        .choice-btn:hover { border-color: #f5c518; background: #333; transform: translateY(-3px); }
+        .choice-icon { font-size: 2.4rem; display: block; margin-bottom: 6px; }
+        .result-box {
+            display: none; background: #1b4332; border: 1px solid #40916c;
+            padding: 20px; border-radius: 10px; margin-top: 15px;
+        }
+        .draw-box {
+            display: none; background: #4a2c11; border: 1px solid #ff922b;
+            padding: 14px; border-radius: 10px; margin-bottom: 16px; font-weight: bold;
+        }
+        .btn {
+            background: #f5c518; color: #000; font-weight: bold;
+            padding: 12px 26px; border: none; border-radius: 8px;
+            font-size: 1.05rem; cursor: pointer; margin-top: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="arena"
+         id="rps-arena"
+         data-p1-id="{{ p1[0] }}"
+         data-p1-name="{{ p1[1] }}"
+         data-p2-id="{{ p2[0] }}"
+         data-p2-name="{{ p2[1] }}">
+
+        <span class="stage-badge">{{ match_title }}</span>
+        <h1>✊✋✌️ Pedra, Papel ou Tesoura</h1>
+        <p style="color:#aaa; font-size:0.92rem; margin-top:0;">
+            Não houve acordo no filme final! Quem vencer o torneio escolhe o filme vencedor.
+        </p>
+
+        <div class="matchup">
+            <div class="p-name p1-col">🎮 {{ p1[1] }}</div>
+            <div style="color:#888; font-weight:bold;">VS</div>
+            <div class="p-name p2-col">🎮 {{ p2[1] }}</div>
+        </div>
+
+        <div id="draw-alert" class="draw-box"></div>
+
+        <div id="turn-panel" class="prompt-box">
+            <div id="turn-title" class="prompt-title">
+                Vez de <span style="color:#f5c518;">{{ p1[1] }}</span> escolher (sem {{ p2[1] }} olhar!):
+            </div>
+            <div class="choices">
+                <button type="button" class="choice-btn" data-move="pedra">
+                    <span class="choice-icon">✊</span>Pedra
+                </button>
+                <button type="button" class="choice-btn" data-move="papel">
+                    <span class="choice-icon">✋</span>Papel
+                </button>
+                <button type="button" class="choice-btn" data-move="tesoura">
+                    <span class="choice-icon">✌️</span>Tesoura
+                </button>
+            </div>
+        </div>
+
+        <div id="winner-panel" class="result-box">
+            <h2 id="duel-summary" style="margin:0 0 8px 0; font-size:1.2rem;"></h2>
+            <h3 id="duel-winner" style="margin:0 0 12px 0; color:#f5c518;"></h3>
+            <form action="/session/{{ session_id }}/rps/record" method="POST">
+                <input type="hidden" name="p1_id" value="{{ p1[0] }}">
+                <input type="hidden" name="p2_id" value="{{ p2[0] }}">
+                <input type="hidden" name="winner_id" id="winner_id" value="">
+                <button type="submit" class="btn">Confirmar Vitória ➔</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            const arena = document.getElementById("rps-arena");
+            const p1 = { id: arena.getAttribute("data-p1-id"), name: arena.getAttribute("data-p1-name") };
+            const p2 = { id: arena.getAttribute("data-p2-id"), name: arena.getAttribute("data-p2-name") };
+
+            const icons = { pedra: "✊ Pedra", papel: "✋ Papel", tesoura: "✌️ Tesoura" };
+            let p1Move = null;
+
+            const turnTitle = document.getElementById("turn-title");
+            const turnPanel = document.getElementById("turn-panel");
+            const drawAlert = document.getElementById("draw-alert");
+            const winnerPanel = document.getElementById("winner-panel");
+            const duelSummary = document.getElementById("duel-summary");
+            const duelWinner = document.getElementById("duel-winner");
+            const winnerInput = document.getElementById("winner_id");
+
+            document.querySelectorAll(".choice-btn").forEach(function (btn) {
+                btn.addEventListener("click", function () {
+                    const move = btn.getAttribute("data-move");
+
+                    if (p1Move === null) {
+                        p1Move = move;
+                        drawAlert.style.display = "none";
+                        turnTitle.innerHTML = "✅ Jogada de " + p1.name + " guardada!<br>Agora é a vez de <span style='color:#4dabf7;'>" + p2.name + "</span> escolher:";
+                        return;
+                    }
+
+                    const p2Move = move;
+
+                    if (p1Move === p2Move) {
+                        drawAlert.textContent = "Empate! Ambos escolheram " + icons[p1Move] + ". Joguem novamente!";
+                        drawAlert.style.display = "block";
+                        p1Move = null;
+                        turnTitle.innerHTML = "Vez de <span style='color:#f5c518;'>" + p1.name + "</span> escolher:";
+                        return;
+                    }
+
+                    const p1Wins = (
+                        (p1Move === "pedra" && p2Move === "tesoura") ||
+                        (p1Move === "papel" && p2Move === "pedra") ||
+                        (p1Move === "tesoura" && p2Move === "papel")
+                    );
+
+                    const winPlayer = p1Wins ? p1 : p2;
+                    turnPanel.style.display = "none";
+                    drawAlert.style.display = "none";
+
+                    duelSummary.textContent = p1.name + " (" + icons[p1Move] + ") vs " + p2.name + " (" + icons[p2Move] + ")";
+                    duelWinner.textContent = "🏆 " + winPlayer.name + " venceu este duelo!";
+                    winnerInput.value = winPlayer.id;
+                    winnerPanel.style.display = "block";
+                });
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,509 +1,16 @@
 import os
-from pathlib import Path
-import psycopg2
-from dotenv import load_dotenv
-from flask import Flask, redirect, render_template_string, request, url_for
-
-BASE_DIR = Path(__file__).resolve().parent
-ENV_PATH = BASE_DIR / ".env" if (BASE_DIR / ".env").exists() else BASE_DIR.parent / ".env"
-load_dotenv(dotenv_path=ENV_PATH)
+from flask import Flask, redirect, render_template, render_template_string, request, session, url_for
+from db import (
+    ensure_schema_updates,
+    filter_movies_in_db,
+    get_connection,
+    get_dynamic_filter_options,
+)
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "chave_secreta_imdb_game_2026")
 
-
-def get_connection():
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST", "localhost").strip(),
-        port=os.getenv("DB_PORT", "5432").strip(),
-        dbname=os.getenv("DB_NAME", "movie_game").strip(),
-        user=os.getenv("DB_USER", "postgres").strip(),
-        password=os.getenv("DB_PASSWORD", "").strip(),
-    )
-
-
-def ensure_filter_columns():
-    """Garante que as colunas de décadas e duração comportam os novos formatos de texto."""
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("""
-            ALTER TABLE public.filter_choice
-            ALTER COLUMN year_choice TYPE VARCHAR(100) USING year_choice::VARCHAR,
-            ALTER COLUMN duration_choice TYPE VARCHAR(50) USING duration_choice::VARCHAR;
-
-            ALTER TABLE public.filter_round
-            ADD COLUMN IF NOT EXISTS applied_decades VARCHAR(100),
-            ADD COLUMN IF NOT EXISTS applied_duration_code VARCHAR(50),
-            ADD COLUMN IF NOT EXISTS conflict_fields VARCHAR(255);
-        """)
-    conn.commit()
-    conn.close()
-
-
-ensure_filter_columns()
-
-
-def get_dynamic_filter_options():
-    """Extrai décadas, classificações válidas (sem Not Rated) e géneros da BD."""
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT DISTINCT (year / 10) * 10 AS decade
-            FROM public.movie
-            WHERE is_in_top250 = TRUE AND year IS NOT NULL
-            ORDER BY decade ASC;
-        """)
-        decades = [f"{row[0]}s" for row in cur.fetchall()]
-
-        cur.execute("""
-            SELECT DISTINCT certificate
-            FROM public.movie
-            WHERE is_in_top250 = TRUE
-              AND certificate IS NOT NULL
-              AND TRIM(certificate) != ''
-              AND LOWER(certificate) NOT IN ('not rated', 'unrated', 'none', 'nan')
-            ORDER BY certificate ASC;
-        """)
-        certificates = [row[0] for row in cur.fetchall()]
-
-        cur.execute("""
-            SELECT genres FROM public.movie WHERE is_in_top250 = TRUE AND genres IS NOT NULL;
-        """)
-        genre_set = set()
-        for (g_str,) in cur.fetchall():
-            for g in g_str.split(","):
-                g_clean = g.strip()
-                if g_clean:
-                    genre_set.add(g_clean)
-        genres = sorted(genre_set)
-
-    conn.close()
-    return decades, certificates, genres
-
-
-def filter_movies_in_db(decades_list, cert_list, duration_list, min_rating, genres_list):
-    """Retorna os filmes do Top 250 que cumprem os filtros combinados."""
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT id_movie, original_title, year, certificate, duration_minutes, rating, genres
-            FROM public.movie
-            WHERE is_in_top250 = TRUE;
-        """)
-        all_movies = cur.fetchall()
-    conn.close()
-
-    matching = []
-    for m in all_movies:
-        m_id, title, year, cert, dur_min, rating, m_genres = m
-
-        # 1. Décadas (ex: ['1980s', '1990s'])
-        if decades_list and year:
-            m_decade = f"{(int(year) // 10) * 10}s"
-            if m_decade not in decades_list:
-                continue
-
-        # 2. Classificação Etária (ignora se 'ANY' estiver presente)
-        if cert_list and "ANY" not in cert_list:
-            if not cert or cert not in cert_list:
-                continue
-
-        # 3. Duração (<1h30: <=90 | =2h: 105..135 | =2h30: 135..165 | >2h30: >165)
-        if duration_list and dur_min is not None:
-            dur_ok = False
-            for d_code in duration_list:
-                if d_code == "<1h30" and dur_min <= 90:
-                    dur_ok = True
-                elif d_code == "=2h" and 105 <= dur_min <= 135:
-                    dur_ok = True
-                elif d_code == "=2h30" and 135 <= dur_min <= 165:
-                    dur_ok = True
-                elif d_code == ">2h30" and dur_min > 165:
-                    dur_ok = True
-            if not dur_ok:
-                continue
-
-        # 4. Rating mínimo
-        if min_rating and rating is not None:
-            if float(rating) < float(min_rating):
-                continue
-
-        # 5. Género
-        if genres_list and m_genres:
-            movie_g_set = {g.strip() for g in m_genres.split(",")}
-            if not movie_g_set.intersection(set(genres_list)):
-                continue
-
-        matching.append(m)
-
-    return matching
-
-
-HOME_HTML = """
-<!DOCTYPE html>
-<html lang="pt">
-<head>
-    <meta charset="UTF-8">
-    <title>IMDb Top 250 - Movie Picker Game</title>
-    <style>
-        * { box-sizing: border-box; }
-        body {
-            background-color: #121212; color: #ffffff;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0; padding: 30px 20px; text-align: center;
-        }
-        h1 { color: #f5c518; font-size: 2.2rem; margin-bottom: 8px; }
-        p.subtitle { color: #b3b3b3; margin-top: 0; margin-bottom: 30px; }
-        .setup-box {
-            background-color: #1e1e1e; max-width: 520px; margin: 0 auto 50px auto;
-            padding: 30px; border-radius: 14px; border: 1px solid #2e2e2e;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.7);
-        }
-        .count-selector { display: flex; justify-content: center; gap: 15px; margin-bottom: 25px; }
-        .count-btn {
-            background-color: #2c2c2c; color: #fff; border: 2px solid #444;
-            padding: 12px 24px; font-size: 1.05rem; font-weight: bold;
-            border-radius: 8px; cursor: pointer;
-        }
-        .count-btn.active { background-color: #f5c518; color: #000; border-color: #f5c518; }
-        .player-inputs { display: flex; flex-direction: column; gap: 12px; margin-bottom: 25px; }
-        .player-row { display: flex; align-items: center; gap: 12px; }
-        .player-badge {
-            background-color: #333; color: #f5c518; font-weight: bold;
-            padding: 10px 14px; border-radius: 8px; min-width: 110px;
-        }
-        input[type="text"] {
-            flex: 1; padding: 12px 14px; border-radius: 8px;
-            border: 1px solid #444; background-color: #141414; color: #fff; font-size: 1rem;
-        }
-        .start-btn {
-            width: 100%; background-color: #f5c518; color: #000; font-weight: bold;
-            font-size: 1.15rem; padding: 14px; border: none; border-radius: 8px; cursor: pointer;
-        }
-        .cards { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; }
-        .card { background-color: #1e1e1e; border-radius: 10px; width: 180px; overflow: hidden; }
-        .card img { width: 100%; height: 260px; object-fit: cover; }
-        .card h3 { font-size: 0.95rem; padding: 10px; margin: 0; }
-    </style>
-</head>
-<body>
-    <h1>🎬 IMDb Top 250 Movie Game</h1>
-    <p class="subtitle">Escolham quantos jogadores estão no ecrã e insiram os vossos nomes</p>
-
-    <div class="setup-box">
-        <form action="/start_game" method="POST">
-            <input type="hidden" name="num_players" id="num_players" value="2">
-            <div class="count-selector">
-                <button type="button" class="count-btn active" onclick="setPlayers(2)">2 Jogadores</button>
-                <button type="button" class="count-btn" onclick="setPlayers(3)">3 Jogadores</button>
-                <button type="button" class="count-btn" onclick="setPlayers(4)">4 Jogadores</button>
-            </div>
-            <div class="player-inputs">
-                <div class="player-row" id="row-1">
-                    <span class="player-badge">Jogador 1</span>
-                    <input type="text" name="player_1" placeholder="Nome do Jogador 1" required>
-                </div>
-                <div class="player-row" id="row-2">
-                    <span class="player-badge">Jogador 2</span>
-                    <input type="text" name="player_2" placeholder="Nome do Jogador 2" required>
-                </div>
-                <div class="player-row" id="row-3" style="display: none;">
-                    <span class="player-badge">Jogador 3</span>
-                    <input type="text" name="player_3" id="input-3" placeholder="Nome do Jogador 3">
-                </div>
-                <div class="player-row" id="row-4" style="display: none;">
-                    <span class="player-badge">Jogador 4</span>
-                    <input type="text" name="player_4" id="input-4" placeholder="Nome do Jogador 4">
-                </div>
-            </div>
-            <button type="submit" class="start-btn">Começar Partida ➔</button>
-        </form>
-    </div>
-
-    <div>
-        <h2 style="color:#ccc; font-size:1.2rem;">Top 3 na Base de Dados ({{ total_movies }} filmes ativos)</h2>
-        <div class="cards">
-            {% for m in top_movies %}
-            <div class="card">
-                <img src="{{ m[1] }}" alt="{{ m[0] }}">
-                <h3>{{ m[0] }}</h3>
-            </div>
-            {% endfor %}
-        </div>
-    </div>
-
-    <script>
-        function setPlayers(n) {
-            document.getElementById('num_players').value = n;
-            document.querySelectorAll('.count-btn').forEach((btn, idx) => {
-                btn.classList.toggle('active', (idx + 2) === n);
-            });
-            for (let i = 3; i <= 4; i++) {
-                const row = document.getElementById('row-' + i);
-                const inp = document.getElementById('input-' + i);
-                row.style.display = (i <= n) ? 'flex' : 'none';
-                inp.required = (i <= n);
-                if (i > n) inp.value = '';
-            }
-        }
-    </script>
-</body>
-</html>
-"""
-
-FILTER_TURN_HTML = """
-<!DOCTYPE html>
-<html lang="pt">
-<head>
-    <meta charset="UTF-8">
-    <title>Filtros - Vez de {{ player[2] }}</title>
-    <style>
-        * { box-sizing: border-box; }
-        body {
-            background-color: #121212; color: #fff;
-            font-family: 'Segoe UI', sans-serif; margin: 0; padding: 30px 20px;
-        }
-        .container {
-            max-width: 720px; margin: 0 auto; background: #1e1e1e;
-            padding: 30px; border-radius: 14px; border: 1px solid #333;
-        }
-        .turn-banner {
-            background: #f5c518; color: #000; padding: 12px 20px;
-            border-radius: 8px; font-weight: bold; font-size: 1.25rem;
-            margin-bottom: 25px; text-align: center;
-        }
-        .section { margin-bottom: 26px; text-align: left; }
-        .section h3 { margin: 0 0 10px 0; color: #f5c518; font-size: 1.05rem; }
-        .section small { color: #aaa; font-weight: normal; }
-        .chips { display: flex; flex-wrap: wrap; gap: 10px; }
-        .chip input { display: none; }
-        .chip span {
-            display: inline-block; padding: 10px 16px; background: #2b2b2b;
-            border: 2px solid #444; border-radius: 8px; cursor: pointer;
-            font-weight: 600; transition: all 0.15s; user-select: none;
-        }
-        .chip input:checked + span {
-            background: #f5c518; color: #000; border-color: #f5c518;
-        }
-        .submit-btn {
-            width: 100%; background: #f5c518; color: #000; font-weight: bold;
-            font-size: 1.15rem; padding: 15px; border: none; border-radius: 8px;
-            cursor: pointer; margin-top: 10px;
-        }
-        .error-msg {
-            color: #ff6b6b; font-weight: bold; margin-top: 8px; display: none;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="turn-banner">
-            🎮 Vez de {{ player[2] }} (Jogador {{ player[1] }} de {{ total_players }})
-        </div>
-
-        <form action="/session/{{ session_id }}/filters" method="POST" onsubmit="return validateForm()">
-            <input type="hidden" name="id_player" value="{{ player[0] }}">
-
-            <!-- 1. DÉCADAS (Máximo 3) -->
-            <div class="section">
-                <h3>1. Ano do Filme — Décadas <small>(Escolhe entre 1 e 3 opções no máximo)</small></h3>
-                <div class="chips">
-                    {% for dec in decades %}
-                    <label class="chip">
-                        <input type="checkbox" name="decades" value="{{ dec }}" onchange="limitDecades(this)">
-                        <span>{{ dec }}</span>
-                    </label>
-                    {% endfor %}
-                </div>
-                <div id="decade-error" class="error-msg">Seleciona pelo menos 1 década (máximo 3)!</div>
-            </div>
-
-            <!-- 2. DURAÇÃO (±15 min) -->
-            <div class="section">
-                <h3>2. Duração do Filme <small>(Intervalo aproximado ±15 min)</small></h3>
-                <div class="chips">
-                    <label class="chip">
-                        <input type="radio" name="duration" value="<1h30" required>
-                        <span>&lt; 1h30 (até 90m)</span>
-                    </label>
-                    <label class="chip">
-                        <input type="radio" name="duration" value="=2h">
-                        <span>= 2h (1h45 a 2h15)</span>
-                    </label>
-                    <label class="chip">
-                        <input type="radio" name="duration" value="=2h30">
-                        <span>= 2h30 (2h15 a 2h45)</span>
-                    </label>
-                    <label class="chip">
-                        <input type="radio" name="duration" value=">2h30">
-                        <span>&gt; 2h30 (+165m)</span>
-                    </label>
-                </div>
-            </div>
-
-            <!-- 3. CLASSIFICAÇÃO ETÁRIA (Sem Not Rated) -->
-            <div class="section">
-                <h3>3. Restrição de Idade <small>(Apenas classificações definidas)</small></h3>
-                <div class="chips">
-                    <label class="chip">
-                        <input type="radio" name="certificate" value="ANY" checked>
-                        <span>Qualquer Idade</span>
-                    </label>
-                    {% for cert in certificates %}
-                    <label class="chip">
-                        <input type="radio" name="certificate" value="{{ cert }}">
-                        <span>{{ cert }}</span>
-                    </label>
-                    {% endfor %}
-                </div>
-            </div>
-
-            <!-- 4. RATING MÍNIMO -->
-            <div class="section">
-                <h3>4. Pontuação Mínima no IMDb</h3>
-                <div class="chips">
-                    <label class="chip">
-                        <input type="radio" name="rating" value="8.0" checked>
-                        <span>⭐ 8.0+</span>
-                    </label>
-                    <label class="chip">
-                        <input type="radio" name="rating" value="8.3">
-                        <span>⭐ 8.3+</span>
-                    </label>
-                    <label class="chip">
-                        <input type="radio" name="rating" value="8.5">
-                        <span>⭐ 8.5+</span>
-                    </label>
-                    <label class="chip">
-                        <input type="radio" name="rating" value="8.8">
-                        <span>⭐ 8.8+</span>
-                    </label>
-                </div>
-            </div>
-
-            <!-- 5. GÉNERO -->
-            <div class="section">
-                <h3>5. Género Principal</h3>
-                <div class="chips">
-                    {% for g in genres %}
-                    <label class="chip">
-                        <input type="radio" name="genre" value="{{ g }}" required>
-                        <span>{{ g }}</span>
-                    </label>
-                    {% endfor %}
-                </div>
-            </div>
-
-            <button type="submit" class="submit-btn">Confirmar Filtros de {{ player[2] }} ➔</button>
-        </form>
-    </div>
-
-    <script>
-        function limitDecades(checkbox) {
-            const checked = document.querySelectorAll('input[name="decades"]:checked');
-            if (checked.length > 3) {
-                checkbox.checked = false;
-                alert('Podes escolher no máximo 3 décadas!');
-            }
-        }
-        function validateForm() {
-            const checked = document.querySelectorAll('input[name="decades"]:checked');
-            const err = document.getElementById('decade-error');
-            if (checked.length === 0) {
-                err.style.display = 'block';
-                return false;
-            }
-            err.style.display = 'none';
-            return true;
-        }
-    </script>
-</body>
-</html>
-"""
-
-FILTER_SUMMARY_HTML = """
-<!DOCTYPE html>
-<html lang="pt">
-<head>
-    <meta charset="UTF-8">
-    <title>Resultado dos Filtros - Sessão #{{ session_id }}</title>
-    <style>
-        body {
-            background-color: #121212; color: #fff;
-            font-family: 'Segoe UI', sans-serif; padding: 40px 20px; text-align: center;
-        }
-        .box {
-            max-width: 780px; margin: 0 auto; background: #1e1e1e;
-            padding: 30px; border-radius: 14px; border: 1px solid #333;
-        }
-        h1 { color: #f5c518; margin-top: 0; }
-        table {
-            width: 100%; border-collapse: collapse; margin: 20px 0;
-            background: #161616; border-radius: 8px; overflow: hidden;
-        }
-        th, td { padding: 12px; border-bottom: 1px solid #2e2e2e; text-align: left; }
-        th { background: #262626; color: #f5c518; }
-        .status-ok {
-            background: #1b4332; border: 1px solid #40916c; padding: 18px;
-            border-radius: 10px; margin-top: 20px;
-        }
-        .status-conflict {
-            background: #4a151b; border: 1px solid #e63946; padding: 18px;
-            border-radius: 10px; margin-top: 20px;
-        }
-        .btn {
-            display: inline-block; background: #f5c518; color: #000;
-            font-weight: bold; padding: 14px 26px; border-radius: 8px;
-            text-decoration: none; margin-top: 15px;
-        }
-    </style>
-</head>
-<body>
-    <div class="box">
-        <h1>📊 Escolhas de Filtro da Ronda #1</h1>
-        <table>
-            <thead>
-                <tr>
-                    <th>Jogador</th>
-                    <th>Décadas</th>
-                    <th>Duração</th>
-                    <th>Idade</th>
-                    <th>Rating</th>
-                    <th>Género</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for c in choices %}
-                <tr>
-                    <td><strong>{{ c[0] }}</strong></td>
-                    <td>{{ c[1] }}</td>
-                    <td>{{ c[2] }}</td>
-                    <td>{{ c[3] }}</td>
-                    <td>⭐ {{ c[4] }}+</td>
-                    <td>{{ c[5] }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-
-        {% if not had_conflict %}
-        <div class="status-ok">
-            <h2>✅ Filtros Compatíveis! ({{ matching_count }} filmes encontrados)</h2>
-            <p>Existe consenso suficiente para avançar diretamente para a escolha dos filmes.</p>
-            <a href="/" class="btn">Pronto para a Etapa 5 (Escolher Filmes) ➔</a>
-        </div>
-        {% else %}
-        <div class="status-conflict">
-            <h2>⚔️ Conflito de Filtros Detetado! ({{ matching_count }} filmes na interseção estrita)</h2>
-            <p>Filtros em disputa: <strong>{{ conflict_fields }}</strong></p>
-            <p>Como a combinação exata tem menos de 3 filmes, vão disputar o filtro no <strong>Torneio de Jogo do Galo</strong>!</p>
-            <a href="/" class="btn">Ir para o Torneio de Jogo do Galo (Etapa 4) ⚔️</a>
-        </div>
-        {% endif %}
-    </div>
-</body>
-</html>
-"""
+ensure_schema_updates()
 
 
 @app.route("/")
@@ -521,7 +28,7 @@ def index():
         cur.execute("SELECT COUNT(*) FROM public.movie WHERE is_in_top250 = TRUE;")
         total_movies = cur.fetchone()[0]
     conn.close()
-    return render_template_string(HOME_HTML, top_movies=top_movies, total_movies=total_movies)
+    return render_template("index.html", top_movies=top_movies, total_movies=total_movies)
 
 
 @app.route("/start_game", methods=["POST"])
@@ -558,7 +65,6 @@ def start_game():
 
     conn.commit()
     conn.close()
-
     return redirect(url_for("session_filters", session_id=session_id))
 
 
@@ -578,21 +84,25 @@ def session_filters(session_id):
 
         if request.method == "POST":
             id_player = int(request.form.get("id_player"))
-            decades = ",".join(request.form.getlist("decades")[:3])
-            duration = request.form.get("duration")
+            decades_list = request.form.getlist("decades")[:3]
+            duration_list = request.form.getlist("duration")[:2]
+            genres_list = request.form.getlist("genres")[:3]
+
+            decades_str = ",".join(decades_list) if decades_list else "ANY"
+            duration_str = ",".join(duration_list) if duration_list else "ANY"
+            genres_str = ",".join(genres_list) if genres_list else "ANY"
+
             certificate = request.form.get("certificate", "ANY")
             rating = float(request.form.get("rating", 8.0))
-            genre = request.form.get("genre")
 
             cur.execute("""
                 INSERT INTO public.filter_choice (
                     id_round, id_player, year_choice, certificate_choice,
                     duration_choice, rating_choice, genres_choice
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s);
-            """, (round_id, id_player, decades, certificate, duration, rating, genre))
+            """, (round_id, id_player, decades_str, certificate, duration_str, rating, genres_str))
             conn.commit()
 
-        # Verificar que jogadores ainda faltam votar nesta ronda
         cur.execute("""
             SELECT sp.id_player, sp.player_order, sp.player_name
             FROM public.session_player sp
@@ -611,8 +121,8 @@ def session_filters(session_id):
 
     if pending_players:
         decades, certificates, genres = get_dynamic_filter_options()
-        return render_template_string(
-            FILTER_TURN_HTML,
+        return render_template(
+            "filters.html",
             session_id=session_id,
             player=pending_players[0],
             total_players=total_players,
@@ -624,8 +134,77 @@ def session_filters(session_id):
     return redirect(url_for("evaluate_filters", session_id=session_id))
 
 
+def compute_merged_filters(choices, winning_category=None, winner_choice=None):
+    """
+    Apenas a 'winning_category' (o filtro que o vencedor escolheu defender) fica
+    100% igual ao do vencedor. Todos os outros 4 filtros (mesmo os escolhidos pelos
+    adversários derrotados) são misturados/unidos entre os jogadores!
+    """
+    # 1. Décadas (Ano)
+    if winning_category == "decades" and winner_choice:
+        final_decades = winner_choice["decades"]
+    else:
+        if any(c["decades"] == "ANY" for c in choices):
+            final_decades = "ANY"
+        else:
+            s = set()
+            for c in choices:
+                s.update(c["decades"].split(","))
+            final_decades = ",".join(sorted(s))
+
+    # 2. Duração
+    if winning_category == "duration" and winner_choice:
+        final_duration = winner_choice["duration"]
+    else:
+        if any(c["duration"] == "ANY" for c in choices):
+            final_duration = "ANY"
+        else:
+            s = set()
+            for c in choices:
+                s.update(c["duration"].split(","))
+            final_duration = ",".join(sorted(s))
+
+    # 3. Idade (Certificate)
+    if winning_category == "certificate" and winner_choice:
+        final_cert = winner_choice["certificate"]
+    else:
+        if any(c["certificate"] == "ANY" for c in choices):
+            final_cert = "ANY"
+        else:
+            final_cert = ",".join(sorted({c["certificate"] for c in choices}))
+
+    # 4. Rating (Quando misturado, usa o menor rating para abranger os filmes de todos)
+    if winning_category == "rating" and winner_choice:
+        final_rating = float(winner_choice["rating"])
+    else:
+        final_rating = min(float(c["rating"]) for c in choices)
+
+    # 5. Géneros
+    if winning_category == "genres" and winner_choice:
+        final_genres = winner_choice["genres"]
+    else:
+        if any(c["genres"] == "ANY" for c in choices):
+            final_genres = "ANY"
+        else:
+            s = set()
+            for c in choices:
+                s.update(c["genres"].split(","))
+            final_genres = ",".join(sorted(s))
+
+    return {
+        "decades": final_decades,
+        "duration": final_duration,
+        "certificate": final_cert,
+        "rating": final_rating,
+        "genres": final_genres,
+    }
+
+
 @app.route("/session/<int:session_id>/filters/result")
 def evaluate_filters(session_id):
+    all_decades, _, all_genres = get_dynamic_filter_options()
+    all_durations = ["<1h30", "=2h", "=2h30", ">2h30"]
+
     conn = get_connection()
     with conn.cursor() as cur:
         cur.execute("""
@@ -635,76 +214,588 @@ def evaluate_filters(session_id):
         round_id = cur.fetchone()[0]
 
         cur.execute("""
-            SELECT sp.player_name, fc.year_choice, fc.duration_choice,
+            SELECT sp.id_player, sp.player_name, fc.year_choice, fc.duration_choice,
                    fc.certificate_choice, fc.rating_choice, fc.genres_choice
             FROM public.filter_choice fc
             JOIN public.session_player sp ON sp.id_player = fc.id_player
             WHERE fc.id_round = %s
             ORDER BY sp.player_order ASC;
         """, (round_id,))
-        choices = cur.fetchall()
+        rows = cur.fetchall()
 
-        # Analisar interseção (o que é comum) vs união
-        decade_sets = [set(c[1].split(",")) for c in choices if c[1]]
+        decade_sets = [set(all_decades) if r[2] == "ANY" else set(r[2].split(",")) for r in rows]
+        dur_sets = [set(all_durations) if r[3] == "ANY" else set(r[3].split(",")) for r in rows]
+        genre_sets = [set(all_genres) if r[6] == "ANY" else set(r[6].split(",")) for r in rows]
+
         common_decades = set.intersection(*decade_sets) if decade_sets else set()
-        union_decades = set.union(*decade_sets) if decade_sets else set()
+        common_durations = set.intersection(*dur_sets) if dur_sets else set()
+        common_genres = set.intersection(*genre_sets) if genre_sets else set()
+        cert_set = {r[4] for r in rows if r[4] and r[4] != "ANY"}
+        max_rating = max(float(r[5]) for r in rows)
 
-        dur_set = {c[2] for c in choices if c[2]}
-        cert_set = {c[3] for c in choices if c[3] and c[3] != "ANY"}
-        max_min_rating = max(float(c[4]) for c in choices if c[4] is not None)
-        genre_set = {c[5] for c in choices if c[5]}
-
-        # Testar interseção estrita (ex: se escolheram géneros diferentes, só filmes que tenham ambos os géneros)
-        strict_decades = list(common_decades) if common_decades else list(union_decades)
-        strict_durations = list(dur_set) if len(dur_set) == 1 else []
-        strict_genres = list(genre_set) if len(genre_set) == 1 else []
-
-        # Verificar quantos filmes cumprem simultaneamente TODAS as exigências de todos os jogadores
-        matching_strict = [
-            m for m in filter_movies_in_db(
-                list(common_decades) if common_decades else ["__NONE__"],
-                list(cert_set) if len(cert_set) <= 1 else ["__NONE__"],
-                list(dur_set) if len(dur_set) == 1 else ["__NONE__"],
-                max_min_rating,
-                list(genre_set) if len(genre_set) == 1 else ["__NONE__"],
-            )
-        ]
-
-        conflicts = []
-        if not common_decades:
-            conflicts.append("Décadas")
-        if len(dur_set) > 1:
-            conflicts.append("Duração")
-        if len(cert_set) > 1:
-            conflicts.append("Restrição de Idade")
-        if len(genre_set) > 1:
-            conflicts.append("Género")
+        matching_strict = filter_movies_in_db(
+            list(common_decades) if common_decades else ["__NONE__"],
+            list(cert_set) if len(cert_set) <= 1 else ["__NONE__"],
+            list(common_durations) if common_durations else ["__NONE__"],
+            max_rating,
+            list(common_genres) if common_genres else ["__NONE__"],
+        )
 
         had_conflict = len(matching_strict) < 3
-        conflict_str = ", ".join(conflicts) if conflicts else "Combinação demasiado restrita (< 3 filmes)"
 
-        new_status = "TIE_FILTER" if had_conflict else "SWIPING"
-        cur.execute("""
-            UPDATE public.filter_round
-            SET had_conflict = %s, conflict_fields = %s
-            WHERE id_round = %s;
-        """, (had_conflict, conflict_str if had_conflict else None, round_id))
-
-        cur.execute("""
-            UPDATE public.game_session SET status = %s WHERE id_session = %s;
-        """, (new_status, session_id))
+        if not had_conflict:
+            choice_dicts = [
+                {
+                    "decades": r[2], "duration": r[3], "certificate": r[4],
+                    "rating": r[5], "genres": r[6]
+                }
+                for r in rows
+            ]
+            merged = compute_merged_filters(choice_dicts)
+            cur.execute("""
+                UPDATE public.filter_round
+                SET had_conflict = FALSE,
+                    applied_decades = %s, applied_duration_code = %s,
+                    applied_certificate = %s, applied_min_rating = %s, applied_genre = %s
+                WHERE id_round = %s;
+            """, (
+                merged["decades"], merged["duration"], merged["certificate"],
+                merged["rating"], merged["genres"], round_id,
+            ))
+            cur.execute("UPDATE public.game_session SET status = 'SWIPING' WHERE id_session = %s;", (session_id,))
+        else:
+            cur.execute("UPDATE public.filter_round SET had_conflict = TRUE WHERE id_round = %s;", (round_id,))
+            cur.execute("UPDATE public.game_session SET status = 'TIE_FILTER' WHERE id_session = %s;", (session_id,))
 
     conn.commit()
     conn.close()
 
-    return render_template_string(
-        FILTER_SUMMARY_HTML,
+    return render_template(
+        "filter_summary.html",
         session_id=session_id,
-        choices=choices,
+        choices=rows,
         had_conflict=had_conflict,
         matching_count=len(matching_strict),
-        conflict_fields=conflict_str,
     )
+
+
+@app.route("/session/<int:session_id>/tictactoe/start", methods=["POST"])
+def tictactoe_start(session_id):
+    conn = get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT id_round FROM public.filter_round WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;", (session_id,))
+        round_id = cur.fetchone()[0]
+
+        cur.execute("SELECT id_player, player_name FROM public.session_player WHERE id_session = %s ORDER BY player_order ASC;", (session_id,))
+        players = cur.fetchall()
+
+        used_stakes = set()
+        all_cats = ["genres", "decades", "duration", "rating", "certificate"]
+
+        for p_id, _ in players:
+            stake = request.form.get(f"stake_{p_id}", "genres")
+            # Garante também no servidor que dois jogadores nunca ficam com o mesmo filtro
+            if stake in used_stakes:
+                for fallback in all_cats:
+                    if fallback not in used_stakes:
+                        stake = fallback
+                        break
+            used_stakes.add(stake)
+
+            cur.execute("""
+                UPDATE public.filter_choice
+                SET combat_category = %s
+                WHERE id_round = %s AND id_player = %s;
+            """, (stake, round_id, p_id))
+
+    conn.commit()
+    conn.close()
+
+    session[f"ttt_queue_{session_id}"] = [[p[0], p[1]] for p in players]
+    return redirect(url_for("tictactoe_arena", session_id=session_id))
+
+
+@app.route("/session/<int:session_id>/tictactoe")
+def tictactoe_arena(session_id):
+    queue_key = f"ttt_queue_{session_id}"
+    if queue_key not in session:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT id_player, player_name FROM public.session_player WHERE id_session = %s ORDER BY player_order ASC;", (session_id,))
+            players = cur.fetchall()
+        conn.close()
+        session[queue_key] = [[p[0], p[1]] for p in players]
+
+    queue = session[queue_key]
+    if len(queue) == 1:
+        return redirect(url_for("apply_winner_filter", session_id=session_id, winner_id=queue[0][0]))
+
+    p1, p2 = queue[0], queue[1]
+    match_title = "Grande Final" if len(queue) == 2 else f"Eliminatória ({len(queue)} Jogadores)"
+    return render_template("tictactoe.html", session_id=session_id, p1=p1, p2=p2, match_title=match_title)
+
+
+@app.route("/session/<int:session_id>/tictactoe/record", methods=["POST"])
+def tictactoe_record(session_id):
+    p1_id = int(request.form.get("p1_id"))
+    p2_id = int(request.form.get("p2_id"))
+    winner_id = int(request.form.get("winner_id"))
+
+    conn = get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT id_round FROM public.filter_round WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;", (session_id,))
+        round_id = cur.fetchone()[0]
+
+        cur.execute("""
+            INSERT INTO public.tiebreaker_match (
+                id_session, id_round, game_type, stage,
+                player1_id, player2_id, winner_player_id
+            ) VALUES (%s, %s, 'TIC_TAC_TOE', 'FILTER_CONFLICT', %s, %s, %s);
+        """, (session_id, round_id, p1_id, p2_id, winner_id))
+    conn.commit()
+    conn.close()
+
+    queue_key = f"ttt_queue_{session_id}"
+    queue = session.get(queue_key, [])
+    if len(queue) >= 2:
+        p1, p2 = queue[0], queue[1]
+        winner_obj = p1 if p1[0] == winner_id else p2
+        session[queue_key] = queue[2:] + [winner_obj]
+        session.modified = True
+
+    return redirect(url_for("tictactoe_arena", session_id=session_id))
+
+
+@app.route("/session/<int:session_id>/tictactoe/winner/<int:winner_id>")
+def apply_winner_filter(session_id, winner_id):
+    """
+    Aplica a 100% APENAS a categoria escolhida pelo vencedor (winning_category).
+    Todas as restantes categorias (incluindo as dos derrotados) ficam misturadas!
+    """
+    conn = get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT id_round FROM public.filter_round WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;", (session_id,))
+        round_id = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT sp.id_player, sp.player_name, fc.year_choice, fc.duration_choice,
+                   fc.certificate_choice, fc.rating_choice, fc.genres_choice, fc.combat_category
+            FROM public.filter_choice fc
+            JOIN public.session_player sp ON sp.id_player = fc.id_player
+            WHERE fc.id_round = %s;
+        """, (round_id,))
+        rows = cur.fetchall()
+
+        choice_dicts = []
+        winner_choice = None
+        winner_name = ""
+        winning_category = None
+
+        for r in rows:
+            c_dict = {
+                "id_player": r[0], "name": r[1], "decades": r[2],
+                "duration": r[3], "certificate": r[4], "rating": r[5],
+                "genres": r[6], "combat": r[7] or "genres",
+            }
+            choice_dicts.append(c_dict)
+            if r[0] == winner_id:
+                winner_choice = c_dict
+                winner_name = r[1]
+                winning_category = c_dict["combat"]
+
+        merged = compute_merged_filters(choice_dicts, winning_category, winner_choice)
+
+        cur.execute("""
+            UPDATE public.filter_round
+            SET winning_player_id = %s,
+                applied_decades = %s,
+                applied_duration_code = %s,
+                applied_certificate = %s,
+                applied_min_rating = %s,
+                applied_genre = %s
+            WHERE id_round = %s;
+        """, (
+            winner_id, merged["decades"], merged["duration"],
+            merged["certificate"], merged["rating"], merged["genres"], round_id,
+        ))
+        cur.execute("UPDATE public.game_session SET status = 'SWIPING' WHERE id_session = %s;", (session_id,))
+    conn.commit()
+    conn.close()
+
+    session.pop(f"batch_idx_{session_id}", None)
+
+    cat_names = {
+        "genres": "Género", "decades": "Ano", "duration": "Duração",
+        "rating": "Pontuação", "certificate": "Restrição de Idade"
+    }
+    won_cat_label = cat_names.get(winning_category, winning_category)
+
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html lang="pt">
+    <head>
+        <meta charset="UTF-8">
+        <title>Filtro Vencedor</title>
+        <style>
+            body { background:#121212; color:#fff; font-family:'Segoe UI',sans-serif; text-align:center; padding:60px 20px; }
+            .card { max-width:560px; margin:0 auto; background:#1e1e1e; padding:32px; border-radius:14px; border:1px solid #f5c518; }
+            h1 { color:#f5c518; margin-top:0; }
+            .btn { display:inline-block; background:#f5c518; color:#000; font-weight:bold; padding:14px 28px; border-radius:8px; text-decoration:none; margin-top:20px; }
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h1>🏆 {{ winner_name }} venceu o Jogo do Galo!</h1>
+            <p>Filtro exclusivo de <strong>{{ winner_name }}</strong> (100%): <strong>{{ won_cat_label }}</strong></p>
+            <p style="color:#aaa; font-size:0.92rem;">Todos os outros filtros foram misturados entre o grupo:</p>
+            <p style="color:#eee;">
+                <strong>Ano:</strong> {{ 'Todos' if merged.decades == 'ANY' else merged.decades }} |
+                <strong>Duração:</strong> {{ 'Todas' if merged.duration == 'ANY' else merged.duration }} |
+                <strong>Rating:</strong> ⭐ {{ merged.rating }}+ |
+                <strong>Género:</strong> {{ 'Todos' if merged.genres == 'ANY' else merged.genres }}
+            </p>
+            <a href="/session/{{ session_id }}/movies" class="btn">Escolher Filmes (Etapa 5) ➔</a>
+        </div>
+    </body>
+    </html>
+    """, winner_name=winner_name, won_cat_label=won_cat_label, merged=merged, session_id=session_id)
+
+
+# =========================================================
+# ETAPA 5: RONDAS DE 3 FILMES (GOSTO / NÃO GOSTO / JÁ VI)
+# =========================================================
+def get_session_movie_pool(session_id, round_id):
+    conn = get_connection()
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT applied_decades, applied_certificate, applied_duration_code,
+                   applied_min_rating, applied_genre
+            FROM public.filter_round WHERE id_round = %s;
+        """, (round_id,))
+        row = cur.fetchone()
+    conn.close()
+
+    dec_list = row[0].split(",") if row[0] and row[0] != "ANY" else ["ANY"]
+    cert_list = row[1].split(",") if row[1] and row[1] != "ANY" else ["ANY"]
+    dur_list = row[2].split(",") if row[2] and row[2] != "ANY" else ["ANY"]
+    min_rat = float(row[3]) if row[3] else 8.0
+    gen_list = row[4].split(",") if row[4] and row[4] != "ANY" else ["ANY"]
+
+    movies = filter_movies_in_db(dec_list, cert_list, dur_list, min_rat, gen_list)
+    if len(movies) < 3:
+        movies = filter_movies_in_db(["ANY"], ["ANY"], dur_list, 8.0, gen_list)
+    if len(movies) < 3:
+        movies = filter_movies_in_db(["ANY"], ["ANY"], ["ANY"], 8.0, ["ANY"])
+    return movies
+
+
+@app.route("/session/<int:session_id>/movies")
+def movies_round(session_id):
+    conn = get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT id_round FROM public.filter_round WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;", (session_id,))
+        round_id = cur.fetchone()[0]
+
+        cur.execute("SELECT id_player, player_order, player_name FROM public.session_player WHERE id_session = %s ORDER BY player_order ASC;", (session_id,))
+        players = cur.fetchall()
+        num_players = len(players)
+
+        cur.execute("""
+            SELECT id_movie
+            FROM public.movie_choice
+            WHERE id_session = %s AND id_round = %s
+            GROUP BY id_movie
+            HAVING COUNT(DISTINCT CASE WHEN vote_type = 1 THEN id_player END) = %s
+               AND SUM(CASE WHEN vote_type IN (0, 2) THEN 1 ELSE 0 END) = 0;
+        """, (session_id, round_id, num_players))
+        approved_ids = [r[0] for r in cur.fetchall()]
+
+    conn.close()
+
+    if len(approved_ids) >= 3:
+        return finalize_top3_movies(session_id, round_id, approved_ids[:3])
+
+    all_matching = get_session_movie_pool(session_id, round_id)
+    batch_key = f"batch_idx_{session_id}"
+    batch_idx = session.get(batch_key, 0)
+
+    start_pos = batch_idx * 3
+    current_batch = all_matching[start_pos : start_pos + 3]
+
+    if not current_batch:
+        return finalize_top3_fallback(session_id, round_id, all_matching)
+
+    batch_movie_ids = [m[0] for m in current_batch]
+
+    conn = get_connection()
+    with conn.cursor() as cur:
+        pending_player = None
+        for p in players:
+            cur.execute("""
+                SELECT COUNT(*) FROM public.movie_choice
+                WHERE id_session = %s AND id_round = %s AND id_player = %s
+                  AND id_movie = ANY(%s);
+            """, (session_id, round_id, p[0], batch_movie_ids))
+            if cur.fetchone()[0] < len(batch_movie_ids):
+                pending_player = p
+                break
+    conn.close()
+
+    if not pending_player:
+        session[batch_key] = batch_idx + 1
+        session.modified = True
+        return redirect(url_for("movies_round", session_id=session_id))
+
+    return render_template(
+        "movies_round.html",
+        session_id=session_id,
+        player=pending_player,
+        movies=current_batch,
+        batch_num=batch_idx + 1,
+        approved_count=len(approved_ids),
+    )
+
+
+@app.route("/session/<int:session_id>/movies/vote", methods=["POST"])
+def movies_vote(session_id):
+    id_player = int(request.form.get("id_player"))
+    movie_ids = request.form.getlist("movie_ids")
+
+    conn = get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT id_round FROM public.filter_round WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;", (session_id,))
+        round_id = cur.fetchone()[0]
+
+        for m_id_str in movie_ids:
+            m_id = int(m_id_str)
+            vote_val = int(request.form.get(f"vote_{m_id}", 0))
+            cur.execute("""
+                INSERT INTO public.movie_choice (id_session, id_round, id_player, id_movie, vote_type)
+                VALUES (%s, %s, %s, %s, %s);
+            """, (session_id, round_id, id_player, m_id, vote_val))
+
+    conn.commit()
+    conn.close()
+    return redirect(url_for("movies_round", session_id=session_id))
+
+
+def finalize_top3_movies(session_id, round_id, top3_ids):
+    conn = get_connection()
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM public.final_top3_movie WHERE id_session = %s;", (session_id,))
+        for m_id in top3_ids:
+            cur.execute("INSERT INTO public.final_top3_movie (id_session, id_movie) VALUES (%s, %s);", (session_id, m_id))
+        cur.execute("UPDATE public.game_session SET status = 'TOP3_VOTE' WHERE id_session = %s;", (session_id,))
+    conn.commit()
+    conn.close()
+    return redirect(url_for("top3_voting", session_id=session_id))
+
+
+def finalize_top3_fallback(session_id, round_id, all_matching):
+    conn = get_connection()
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT id_movie
+            FROM public.movie_choice
+            WHERE id_session = %s AND id_round = %s
+            GROUP BY id_movie
+            ORDER BY SUM(CASE WHEN vote_type = 1 THEN 1 ELSE 0 END) DESC,
+                     SUM(CASE WHEN vote_type = 2 THEN 1 ELSE 0 END) ASC
+            LIMIT 3;
+        """, (session_id, round_id))
+        top_ids = [r[0] for r in cur.fetchall()]
+    conn.close()
+
+    if len(top_ids) < 3:
+        for m in all_matching:
+            if m[0] not in top_ids:
+                top_ids.append(m[0])
+            if len(top_ids) == 3:
+                break
+
+    return finalize_top3_movies(session_id, round_id, top_ids[:3])
+
+
+# =========================================================
+# ETAPA 6: VOTAÇÃO NOS 3 FINALISTAS, PEDRA-PAPEL-TESOURA E VENCEDOR
+# =========================================================
+@app.route("/session/<int:session_id>/top3", methods=["GET", "POST"])
+def top3_voting(session_id):
+    conn = get_connection()
+    with conn.cursor() as cur:
+        if request.method == "POST":
+            id_player = int(request.form.get("id_player"))
+            id_movie = int(request.form.get("id_movie"))
+            cur.execute("""
+                INSERT INTO public.movie_final_choice (id_session, id_player, id_movie)
+                VALUES (%s, %s, %s);
+            """, (session_id, id_player, id_movie))
+            conn.commit()
+
+        cur.execute("""
+            SELECT sp.id_player, sp.player_order, sp.player_name
+            FROM public.session_player sp
+            WHERE sp.id_session = %s
+              AND sp.id_player NOT IN (
+                  SELECT id_player FROM public.movie_final_choice WHERE id_session = %s
+              )
+            ORDER BY sp.player_order ASC;
+        """, (session_id, session_id))
+        pending_players = cur.fetchall()
+
+        cur.execute("SELECT COUNT(*) FROM public.session_player WHERE id_session = %s;", (session_id,))
+        total_players = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT m.id_movie, m.original_title, m.year, m.duration, m.rating, m.genres, m.poster_url
+            FROM public.final_top3_movie f
+            JOIN public.movie m ON m.id_movie = f.id_movie
+            WHERE f.id_session = %s;
+        """, (session_id,))
+        finalists = cur.fetchall()
+
+    conn.close()
+
+    if pending_players:
+        return render_template(
+            "top3_vote.html",
+            session_id=session_id,
+            player=pending_players[0],
+            total_players=total_players,
+            finalists=finalists,
+        )
+
+    return redirect(url_for("evaluate_top3_votes", session_id=session_id))
+
+
+@app.route("/session/<int:session_id>/top3/evaluate")
+def evaluate_top3_votes(session_id):
+    conn = get_connection()
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT mfc.id_player, sp.player_name, mfc.id_movie
+            FROM public.movie_final_choice mfc
+            JOIN public.session_player sp ON sp.id_player = mfc.id_player
+            WHERE mfc.id_session = %s
+            ORDER BY sp.player_order ASC;
+        """, (session_id,))
+        votes = cur.fetchall()
+
+        chosen_movies = {v[2] for v in votes}
+
+        # Se todos votaram no mesmo filme, vence por unanimidade!
+        if len(chosen_movies) == 1:
+            winning_movie_id = list(chosen_movies)[0]
+            cur.execute("""
+                UPDATE public.game_session
+                SET status = 'FINISHED', finished_at = CURRENT_TIMESTAMP, winning_movie_id = %s
+                WHERE id_session = %s;
+            """, (winning_movie_id, session_id))
+            conn.commit()
+            conn.close()
+            session[f"win_reason_{session_id}"] = "Escolhido por Unanimidade pelo Grupo"
+            return redirect(url_for("winner_screen", session_id=session_id))
+
+        # Se houve divergência, prepara o Torneio de Pedra-Papel-Tesoura
+        cur.execute("UPDATE public.game_session SET status = 'TIE_FINAL' WHERE id_session = %s;", (session_id,))
+        conn.commit()
+    conn.close()
+
+    session[f"rps_queue_{session_id}"] = [[v[0], v[1]] for v in votes]
+    return redirect(url_for("rps_arena", session_id=session_id))
+
+
+@app.route("/session/<int:session_id>/rps")
+def rps_arena(session_id):
+    queue_key = f"rps_queue_{session_id}"
+    if queue_key not in session:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT id_player, player_name FROM public.session_player WHERE id_session = %s ORDER BY player_order ASC;", (session_id,))
+            players = cur.fetchall()
+        conn.close()
+        session[queue_key] = [[p[0], p[1]] for p in players]
+
+    queue = session[queue_key]
+
+    # Quando resta apenas 1 jogador, ele é o Campeão do Pedra-Papel-Tesoura!
+    if len(queue) == 1:
+        champion_id, champion_name = queue[0]
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id_movie FROM public.movie_final_choice
+                WHERE id_session = %s AND id_player = %s LIMIT 1;
+            """, (session_id, champion_id))
+            winning_movie_id = cur.fetchone()[0]
+
+            cur.execute("""
+                UPDATE public.game_session
+                SET status = 'FINISHED', finished_at = CURRENT_TIMESTAMP, winning_movie_id = %s
+                WHERE id_session = %s;
+            """, (winning_movie_id, session_id))
+        conn.commit()
+        conn.close()
+
+        session[f"win_reason_{session_id}"] = f"Definido por {champion_name} no Torneio de Pedra-Papel-Tesoura"
+        return redirect(url_for("winner_screen", session_id=session_id))
+
+    p1, p2 = queue[0], queue[1]
+    match_title = "Grande Final" if len(queue) == 2 else f"Meia-Final ({len(queue)} Jogadores)"
+    return render_template("rps_arena.html", session_id=session_id, p1=p1, p2=p2, match_title=match_title)
+
+
+@app.route("/session/<int:session_id>/rps/record", methods=["POST"])
+def rps_record(session_id):
+    p1_id = int(request.form.get("p1_id"))
+    p2_id = int(request.form.get("p2_id"))
+    winner_id = int(request.form.get("winner_id"))
+
+    conn = get_connection()
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO public.tiebreaker_match (
+                id_session, game_type, stage,
+                player1_id, player2_id, winner_player_id
+            ) VALUES (%s, 'ROCK_PAPER_SCISSORS', 'FINAL_MOVIE_CONFLICT', %s, %s, %s);
+        """, (session_id, p1_id, p2_id, winner_id))
+    conn.commit()
+    conn.close()
+
+    queue_key = f"rps_queue_{session_id}"
+    queue = session.get(queue_key, [])
+    if len(queue) >= 2:
+        p1, p2 = queue[0], queue[1]
+        winner_obj = p1 if p1[0] == winner_id else p2
+        session[queue_key] = queue[2:] + [winner_obj]
+        session.modified = True
+
+    return redirect(url_for("rps_arena", session_id=session_id))
+
+
+@app.route("/session/<int:session_id>/winner")
+def winner_screen(session_id):
+    conn = get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT winning_movie_id FROM public.game_session WHERE id_session = %s;", (session_id,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            conn.close()
+            return redirect(url_for("index"))
+        winning_movie_id = row[0]
+
+        cur.execute("""
+            SELECT id_movie, current_rank, original_title, year, certificate,
+                   duration, rating, vote_count, metascore, directors,
+                   writers, stars, genres, languages, countries, link, poster_url
+            FROM public.movie
+            WHERE id_movie = %s;
+        """, (winning_movie_id,))
+        movie = cur.fetchone()
+    conn.close()
+
+    reason_text = session.get(f"win_reason_{session_id}", "Filme Vencedor da Partida")
+    return render_template("winner_movie.html", movie=movie, reason_text=reason_text)
 
 
 if __name__ == "__main__":

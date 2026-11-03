@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <title>Votação Final - Vez de {{ player[2] }}</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            background-color: #121212; color: #fff;
+            font-family: 'Segoe UI', sans-serif; margin: 0; padding: 30px 20px; text-align: center;
+        }
+        .turn-banner {
+            background: #f5c518; color: #000; padding: 14px 24px;
+            border-radius: 10px; font-weight: bold; font-size: 1.3rem;
+            display: inline-block; margin-bottom: 10px;
+        }
+        p.sub { color: #bbb; margin-top: 0; margin-bottom: 28px; }
+        .grid {
+            display: flex; justify-content: center; gap: 26px; flex-wrap: wrap;
+            margin-bottom: 30px;
+        }
+        .card-label { cursor: pointer; }
+        .card-label input { display: none; }
+        .card {
+            background: #1e1e1e; border: 3px solid #333; border-radius: 14px;
+            width: 270px; overflow: hidden; transition: all 0.2s;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.6);
+        }
+        .card-label input:checked + .card {
+            border-color: #f5c518; transform: translateY(-6px);
+            box-shadow: 0 10px 28px rgba(245, 197, 24, 0.35);
+        }
+        .card img { width: 100%; height: 380px; object-fit: cover; }
+        .card-body { padding: 16px; }
+        .card-title { font-size: 1.15rem; font-weight: bold; margin: 0 0 8px 0; }
+        .card-meta { color: #aaa; font-size: 0.9rem; margin-bottom: 8px; }
+        .card-genre { color: #f5c518; font-size: 0.85rem; font-weight: bold; }
+        .pick-badge {
+            margin-top: 12px; background: #2b2b2b; color: #ddd;
+            padding: 8px; border-radius: 6px; font-weight: bold; font-size: 0.9rem;
+        }
+        .card-label input:checked + .card .pick-badge {
+            background: #f5c518; color: #000;
+        }
+        .btn {
+            background: #f5c518; color: #000; font-weight: bold;
+            font-size: 1.15rem; padding: 15px 40px; border: none;
+            border-radius: 10px; cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="turn-banner">
+        🌟 Votação Final — Vez de {{ player[2] }} ({{ player[1] }}/{{ total_players }})
+    </div>
+    <p class="sub">Escolhe qual destes 3 filmes finalistas queres ver hoje!</p>
+
+    <form action="/session/{{ session_id }}/top3" method="POST">
+        <input type="hidden" name="id_player" value="{{ player[0] }}">
+        <div class="grid">
+            {% for m in finalists %}
+            <label class="card-label">
+                <input type="radio" name="id_movie" value="{{ m[0] }}" required>
+                <div class="card">
+                    <img src="{{ m[6] }}" alt="{{ m[1] }}">
+                    <div class="card-body">
+                        <div class="card-title">{{ m[1] }}</div>
+                        <div class="card-meta">📅 {{ m[2] }} &nbsp;|&nbsp; ⏱️ {{ m[3] }} &nbsp;|&nbsp; ⭐ {{ m[4] }}</div>
+                        <div class="card-genre">{{ m[5] }}</div>
+                        <div class="pick-badge">Selecionar este Filme</div>
+                    </div>
+                </div>
+            </label>
+            {% endfor %}
+        </div>
+        <button type="submit" class="btn">Confirmar Voto Secreto de {{ player[2] }} ➔</button>
+    </form>
+</body>
+</html>

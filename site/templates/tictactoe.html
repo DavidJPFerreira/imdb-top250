@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <title>Jogo do Galo - Sessão #{{ session_id }}</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            background-color: #121212; color: #fff;
+            font-family: 'Segoe UI', sans-serif; text-align: center; padding: 30px 20px;
+        }
+        .arena {
+            max-width: 520px; margin: 0 auto; background: #1e1e1e;
+            padding: 28px; border-radius: 14px; border: 1px solid #333;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+        }
+        .stage-badge {
+            display: inline-block; background: #862e9c; color: #fff;
+            padding: 6px 14px; border-radius: 20px; font-weight: bold;
+            margin-bottom: 12px; font-size: 0.9rem;
+        }
+        h1 { color: #f5c518; margin: 0 0 18px 0; font-size: 1.6rem; }
+        .matchup {
+            display: flex; justify-content: space-around; align-items: center;
+            background: #262626; padding: 12px; border-radius: 10px; margin-bottom: 18px;
+        }
+        .p-card { font-size: 1.15rem; font-weight: bold; }
+        .p-x { color: #f5c518; }
+        .p-o { color: #4dabf7; }
+        .turn-indicator {
+            font-size: 1.2rem; font-weight: bold; margin-bottom: 16px; color: #eee;
+        }
+        .board {
+            display: grid; grid-template-columns: repeat(3, 110px);
+            grid-gap: 10px; justify-content: center; margin: 0 auto 20px auto;
+        }
+        .cell {
+            width: 110px; height: 110px; background: #141414;
+            border: 2px solid #444; border-radius: 12px;
+            font-size: 2.8rem; font-weight: bold; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            user-select: none; transition: background 0.15s, border-color 0.15s;
+        }
+        .cell:hover { background: #242424; border-color: #f5c518; }
+        .cell.x { color: #f5c518; }
+        .cell.o { color: #4dabf7; }
+        .msg-draw {
+            color: #ff922b; font-weight: bold; margin-bottom: 14px; display: none;
+        }
+        .winner-banner {
+            display: none; background: #1b4332; border: 1px solid #40916c;
+            padding: 16px; border-radius: 10px; margin-top: 15px;
+        }
+        .btn {
+            background: #f5c518; color: #000; font-weight: bold;
+            padding: 12px 24px; border: none; border-radius: 8px;
+            font-size: 1.05rem; cursor: pointer; margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="arena"
+         id="game-arena"
+         data-p1-id="{{ p1[0] }}"
+         data-p1-name="{{ p1[1] }}"
+         data-p2-id="{{ p2[0] }}"
+         data-p2-name="{{ p2[1] }}">
+
+        <span class="stage-badge">{{ match_title }}</span>
+        <h1>⚔️ Jogo do Galo</h1>
+
+        <div class="matchup">
+            <div class="p-card p-x">❌ {{ p1[1] }}</div>
+            <div style="color:#888; font-weight:bold;">VS</div>
+            <div class="p-card p-o">⭕ {{ p2[1] }}</div>
+        </div>
+
+        <div id="turn-text" class="turn-indicator">Vez de: ❌ {{ p1[1] }}</div>
+        <div id="draw-text" class="msg-draw">Empate! O tabuleiro reiniciou.</div>
+
+        <div class="board" id="board">
+            <div class="cell" data-index="0"></div>
+            <div class="cell" data-index="1"></div>
+            <div class="cell" data-index="2"></div>
+            <div class="cell" data-index="3"></div>
+            <div class="cell" data-index="4"></div>
+            <div class="cell" data-index="5"></div>
+            <div class="cell" data-index="6"></div>
+            <div class="cell" data-index="7"></div>
+            <div class="cell" data-index="8"></div>
+        </div>
+
+        <div id="winner-box" class="winner-banner">
+            <h2 id="winner-title" style="margin:0 0 10px 0; font-size:1.3rem;"></h2>
+            <form action="/session/{{ session_id }}/tictactoe/record" method="POST">
+                <input type="hidden" name="p1_id" value="{{ p1[0] }}">
+                <input type="hidden" name="p2_id" value="{{ p2[0] }}">
+                <input type="hidden" name="winner_id" id="winner_id" value="">
+                <button type="submit" class="btn">Continuar ➔</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            const arena = document.getElementById("game-arena");
+            const p1 = {
+                id: arena.getAttribute("data-p1-id"),
+                name: arena.getAttribute("data-p1-name"),
+                symbol: "X",
+                icon: "❌"
+            };
+            const p2 = {
+                id: arena.getAttribute("data-p2-id"),
+                name: arena.getAttribute("data-p2-name"),
+                symbol: "O",
+                icon: "⭕"
+            };
+
+            let current = p1;
+            let state = Array(9).fill(null);
+            let finished = false;
+
+            const wins = [
+                [0, 1, 2], [3, 4, 5], [6, 7, 8],
+                [0, 3, 6], [1, 4, 7], [2, 5, 8],
+                [0, 4, 8], [2, 4, 6]
+            ];
+
+            const cells = document.querySelectorAll(".cell");
+            const turnText = document.getElementById("turn-text");
+            const drawText = document.getElementById("draw-text");
+            const winnerBox = document.getElementById("winner-box");
+            const winnerTitle = document.getElementById("winner-title");
+            const winnerInput = document.getElementById("winner_id");
+
+            function checkWin(sym) {
+                return wins.some(function (combo) {
+                    return state[combo[0]] === sym && state[combo[1]] === sym && state[combo[2]] === sym;
+                });
+            }
+
+            cells.forEach(function (cell) {
+                cell.addEventListener("click", function () {
+                    const idx = parseInt(cell.getAttribute("data-index"), 10);
+                    if (finished || state[idx] !== null) return;
+
+                    drawText.style.display = "none";
+                    state[idx] = current.symbol;
+                    cell.textContent = current.icon;
+                    cell.classList.add(current.symbol.toLowerCase());
+
+                    if (checkWin(current.symbol)) {
+                        finished = true;
+                        turnText.textContent = "🏆 Vencedor: " + current.name + "!";
+                        winnerTitle.textContent = "🎉 " + current.name + " ganhou!";
+                        winnerInput.value = current.id;
+                        winnerBox.style.display = "block";
+                        return;
+                    }
+
+                    if (state.every(function (v) { return v !== null; })) {
+                        setTimeout(function () {
+                            state.fill(null);
+                            cells.forEach(function (c) {
+                                c.textContent = "";
+                                c.className = "cell";
+                            });
+                            drawText.style.display = "block";
+                        }, 450);
+                        return;
+                    }
+
+                    current = (current.id === p1.id) ? p2 : p1;
+                    turnText.textContent = "Vez de: " + current.icon + " " + current.name;
+                });
+            });
+        });
+    </script>
+</body>
+</html>
