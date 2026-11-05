@@ -40,6 +40,7 @@ query ($first: Int!, $after: String) {
         ratingsSummary { aggregateRating voteCount }
         metacritic { metascore { score } }
         primaryImage { url }
+        plot { plotText { plainText } }
         titleGenres { genres { genre { text } } }
         principalCredits {
           category { text id }
@@ -79,6 +80,7 @@ def parse_movie_node(rank, node, today):
     vote_count = ratings.get("voteCount")
     metascore = ((node.get("metacritic") or {}).get("metascore") or {}).get("score")
     poster_url = (node.get("primaryImage") or {}).get("url")
+    plot = ((node.get("plot") or {}).get("plotText") or {}).get("plainText")
 
     genres_list = (node.get("titleGenres") or {}).get("genres") or []
     genres = [
@@ -130,6 +132,7 @@ def parse_movie_node(rank, node, today):
         "countries": countries,
         "link": f"https://www.imdb.com/title/{imdb_id}/" if imdb_id else None,
         "poster_url": poster_url,
+        "plot": plot,
         "data_extracao": today,
     }
 
@@ -159,7 +162,7 @@ def fetch_all_top_250():
                 parse_movie_node(edge.get("currentRank"), edge.get("node") or {}, today)
             )
 
-        print(f"Progresso: {len(movies)}/250 filmes recolhidos...")
+        print(f"Progresso: {len(movies)}/250 filmes recolhidos (com sinopse)...")
         page_info = chart_data.get("pageInfo") or {}
         if not page_info.get("hasNextPage"):
             break
@@ -169,7 +172,7 @@ def fetch_all_top_250():
 
 
 def main():
-    print("A recolher o Top 250 via IMDb GraphQL API...")
+    print("A recolher o Top 250 + Sinopses via IMDb GraphQL API...")
     dataset, today = fetch_all_top_250()
 
     file_dated = DATA_DIR / f"imdb_top250_detalhado_{today}.json"
@@ -181,7 +184,7 @@ def main():
     with open(file_latest, "w", encoding="utf-8") as f:
         json.dump(dataset, f, ensure_ascii=False, indent=2)
 
-    print(f"\nSucesso! {len(dataset)} filmes guardados em JSON:\n- {file_latest}\n- {file_dated}")
+    print(f"\nSucesso! {len(dataset)} filmes guardados em JSON com sinopse:\n- {file_latest}\n- {file_dated}")
 
 
 if __name__ == "__main__":

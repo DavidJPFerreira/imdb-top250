@@ -1,14 +1,24 @@
 <!DOCTYPE html>
-<html lang="pt">
+<html lang="{{ lang }}">
 <head>
     <meta charset="UTF-8">
-    <title>Jogo do Galo - Sessão #{{ session_id }}</title>
+    <title>{{ t.ttt_title }} - #{{ session_id }}</title>
     <style>
         * { box-sizing: border-box; }
         body {
             background-color: #121212; color: #fff;
-            font-family: 'Segoe UI', sans-serif; text-align: center; padding: 30px 20px;
+            font-family: 'Segoe UI', sans-serif; text-align: center; padding: 25px 20px;
         }
+        .top-bar {
+            max-width: 520px; margin: 0 auto 14px auto;
+            display: flex; justify-content: flex-end; gap: 8px;
+        }
+        .lang-btn {
+            background: #1e1e1e; color: #ccc; border: 1px solid #444;
+            padding: 5px 10px; border-radius: 6px; text-decoration: none;
+            font-size: 0.85rem; font-weight: bold;
+        }
+        .lang-btn.active { background: #f5c518; color: #000; border-color: #f5c518; }
         .arena {
             max-width: 520px; margin: 0 auto; background: #1e1e1e;
             padding: 28px; border-radius: 14px; border: 1px solid #333;
@@ -27,9 +37,7 @@
         .p-card { font-size: 1.15rem; font-weight: bold; }
         .p-x { color: #f5c518; }
         .p-o { color: #4dabf7; }
-        .turn-indicator {
-            font-size: 1.2rem; font-weight: bold; margin-bottom: 16px; color: #eee;
-        }
+        .turn-indicator { font-size: 1.2rem; font-weight: bold; margin-bottom: 16px; color: #eee; }
         .board {
             display: grid; grid-template-columns: repeat(3, 110px);
             grid-gap: 10px; justify-content: center; margin: 0 auto 20px auto;
@@ -44,9 +52,7 @@
         .cell:hover { background: #242424; border-color: #f5c518; }
         .cell.x { color: #f5c518; }
         .cell.o { color: #4dabf7; }
-        .msg-draw {
-            color: #ff922b; font-weight: bold; margin-bottom: 14px; display: none;
-        }
+        .msg-draw { color: #ff922b; font-weight: bold; margin-bottom: 14px; display: none; }
         .winner-banner {
             display: none; background: #1b4332; border: 1px solid #40916c;
             padding: 16px; border-radius: 10px; margin-top: 15px;
@@ -59,15 +65,24 @@
     </style>
 </head>
 <body>
+    <div class="top-bar">
+        <a href="/set_lang/pt" class="lang-btn {% if lang == 'pt' %}active{% endif %}">🇵🇹 PT</a>
+        <a href="/set_lang/en" class="lang-btn {% if lang == 'en' %}active{% endif %}">🇬🇧 EN</a>
+        <a href="/set_lang/es" class="lang-btn {% if lang == 'es' %}active{% endif %}">🇪🇸 ES</a>
+    </div>
+
     <div class="arena"
          id="game-arena"
          data-p1-id="{{ p1[0] }}"
          data-p1-name="{{ p1[1] }}"
          data-p2-id="{{ p2[0] }}"
-         data-p2-name="{{ p2[1] }}">
+         data-p2-name="{{ p2[1] }}"
+         data-txt-turn="{{ t.turn_of }}"
+         data-txt-winner="{{ t.ttt_winner }}"
+         data-txt-won="{{ t.ttt_won }}">
 
         <span class="stage-badge">{{ match_title }}</span>
-        <h1>⚔️ Jogo do Galo</h1>
+        <h1>⚔️ {{ t.ttt_title }}</h1>
 
         <div class="matchup">
             <div class="p-card p-x">❌ {{ p1[1] }}</div>
@@ -75,8 +90,8 @@
             <div class="p-card p-o">⭕ {{ p2[1] }}</div>
         </div>
 
-        <div id="turn-text" class="turn-indicator">Vez de: ❌ {{ p1[1] }}</div>
-        <div id="draw-text" class="msg-draw">Empate! O tabuleiro reiniciou.</div>
+        <div id="turn-text" class="turn-indicator">{{ t.turn_of }}: ❌ {{ p1[1] }}</div>
+        <div id="draw-text" class="msg-draw">{{ t.ttt_draw }}</div>
 
         <div class="board" id="board">
             <div class="cell" data-index="0"></div>
@@ -96,7 +111,7 @@
                 <input type="hidden" name="p1_id" value="{{ p1[0] }}">
                 <input type="hidden" name="p2_id" value="{{ p2[0] }}">
                 <input type="hidden" name="winner_id" id="winner_id" value="">
-                <button type="submit" class="btn">Continuar ➔</button>
+                <button type="submit" class="btn">{{ t.btn_continue }}</button>
             </form>
         </div>
     </div>
@@ -104,28 +119,16 @@
     <script>
         document.addEventListener("DOMContentLoaded", function () {
             const arena = document.getElementById("game-arena");
-            const p1 = {
-                id: arena.getAttribute("data-p1-id"),
-                name: arena.getAttribute("data-p1-name"),
-                symbol: "X",
-                icon: "❌"
-            };
-            const p2 = {
-                id: arena.getAttribute("data-p2-id"),
-                name: arena.getAttribute("data-p2-name"),
-                symbol: "O",
-                icon: "⭕"
-            };
+            const p1 = { id: arena.getAttribute("data-p1-id"), name: arena.getAttribute("data-p1-name"), symbol: "X", icon: "❌" };
+            const p2 = { id: arena.getAttribute("data-p2-id"), name: arena.getAttribute("data-p2-name"), symbol: "O", icon: "⭕" };
+            const txtTurn = arena.getAttribute("data-txt-turn");
+            const txtWinner = arena.getAttribute("data-txt-winner");
+            const txtWon = arena.getAttribute("data-txt-won");
 
             let current = p1;
             let state = Array(9).fill(null);
             let finished = false;
-
-            const wins = [
-                [0, 1, 2], [3, 4, 5], [6, 7, 8],
-                [0, 3, 6], [1, 4, 7], [2, 5, 8],
-                [0, 4, 8], [2, 4, 6]
-            ];
+            const wins = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
 
             const cells = document.querySelectorAll(".cell");
             const turnText = document.getElementById("turn-text");
@@ -135,9 +138,7 @@
             const winnerInput = document.getElementById("winner_id");
 
             function checkWin(sym) {
-                return wins.some(function (combo) {
-                    return state[combo[0]] === sym && state[combo[1]] === sym && state[combo[2]] === sym;
-                });
+                return wins.some(function (c) { return state[c[0]] === sym && state[c[1]] === sym && state[c[2]] === sym; });
             }
 
             cells.forEach(function (cell) {
@@ -152,8 +153,8 @@
 
                     if (checkWin(current.symbol)) {
                         finished = true;
-                        turnText.textContent = "🏆 Vencedor: " + current.name + "!";
-                        winnerTitle.textContent = "🎉 " + current.name + " ganhou!";
+                        turnText.textContent = "🏆 " + txtWinner + " " + current.name + "!";
+                        winnerTitle.textContent = "🎉 " + current.name + " " + txtWon;
                         winnerInput.value = current.id;
                         winnerBox.style.display = "block";
                         return;
@@ -162,17 +163,14 @@
                     if (state.every(function (v) { return v !== null; })) {
                         setTimeout(function () {
                             state.fill(null);
-                            cells.forEach(function (c) {
-                                c.textContent = "";
-                                c.className = "cell";
-                            });
+                            cells.forEach(function (c) { c.textContent = ""; c.className = "cell"; });
                             drawText.style.display = "block";
                         }, 450);
                         return;
                     }
 
                     current = (current.id === p1.id) ? p2 : p1;
-                    turnText.textContent = "Vez de: " + current.icon + " " + current.name;
+                    turnText.textContent = txtTurn + ": " + current.icon + " " + current.name;
                 });
             });
         });

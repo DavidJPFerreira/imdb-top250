@@ -1,16 +1,27 @@
 import os
+import random
+from collections import Counter
+from translations import TRANSLATIONS
 from flask import Flask, redirect, render_template, render_template_string, request, session, url_for
-from db import (
-    ensure_schema_updates,
-    filter_movies_in_db,
-    get_connection,
-    get_dynamic_filter_options,
-)
+from db import (ensure_schema_updates, filter_movies_in_db, get_connection, get_dynamic_filter_options,)
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "chave_secreta_imdb_game_2026")
 
 ensure_schema_updates()
+
+
+@app.context_processor
+def inject_translations():
+    lang = session.get("lang", "pt")
+    return {"t": TRANSLATIONS.get(lang, TRANSLATIONS["pt"]), "lang": lang}
+
+
+@app.route("/set_lang/<lang_code>")
+def set_language(lang_code):
+    if lang_code in ("pt", "en", "es"):
+        session["lang"] = lang_code
+    return redirect(request.referrer or url_for("index"))
 
 
 @app.route("/")
@@ -28,7 +39,12 @@ def index():
         cur.execute("SELECT COUNT(*) FROM public.movie WHERE is_in_top250 = TRUE;")
         total_movies = cur.fetchone()[0]
     conn.close()
-    return render_template("index.html", top_movies=top_movies, total_movies=total_movies)
+    return render_template("landing.html", top_movies=top_movies, total_movies=total_movies)
+
+
+@app.route("/setup")
+def setup_page():
+    return render_template("index.html")
 
 
 @app.route("/start_game", methods=["POST"])
@@ -460,11 +476,30 @@ def apply_winner_filter(session_id, winner_id):
     </html>
     """, winner_name=winner_name, won_cat_label=won_cat_label, merged=merged, session_id=session_id)
 
+# =========================================================
+# ETAPA 5: RONDAS DE 3 FILMES (COM NOVA HIERARQUIA E ROTAÇÃO)
+# =========================================================
+def expand_adjacent_decades(dec_list):
+    """Adiciona uma década antes e uma depois para dar margem ao Ano sem mostrar filmes de 1920."""
+    if not dec_list or "ANY" in dec_list:
+        return ["ANY"]
+    expanded = set(dec_list)
+    for d in dec_list:
+        try:
+            yr = int(d.replace("s", ""))
+            expanded.add(f"{yr - 10}s")
+            expanded.add(f"{yr + 10}s")
+        except ValueError:
+            pass
+    return sorted(expanded)
 
-# =========================================================
-# ETAPA 5: RONDAS DE 3 FILMES (GOSTO / NÃO GOSTO / JÁ VI)
-# =========================================================
-def get_session_movie_pool(session_id, round_id):
+
+def get_session_movie_pool(session_id, round_id, min_needed=9):
+    """
+    Aplica a hierarquia de relaxamento pedida (do que tem MAIS margem para o que tem MENOS margem):
+    1. Tempo (Duração) -> 2. Rating -> 3. Ano -> 4. Género -> 5. Restrição de Idade
+    Garante pelo menos 'min_needed' filmes (9 filmes = 3 rondas de 3 filmes) sem duplicar.
+    """
     conn = get_connection()
     with conn.cursor() as cur:
         cur.execute("""
@@ -481,12 +516,74 @@ def get_session_movie_pool(session_id, round_id):
     min_rat = float(row[3]) if row[3] else 8.0
     gen_list = row[4].split(",") if row[4] and row[4] != "ANY" else ["ANY"]
 
-    movies = filter_movies_in_db(dec_list, cert_list, dur_list, min_rat, gen_list)
-    if len(movies) < 3:
-        movies = filter_movies_in_db(["ANY"], ["ANY"], dur_list, 8.0, gen_list)
-    if len(movies) < 3:
-        movies = filter_movies_in_db(["ANY"], ["ANY"], ["ANY"], 8.0, ["ANY"])
-    return movies
+    adj_decades = expand_adjacent_decades(dec_list)
+
+    # Lista progressiva de tentativas respeitando: Tempo -> Rating -> Ano -> Género -> Idade
+    relaxation_steps = [
+        # 0. Filtros exatos
+        (dec_list, cert_list, dur_list, min_rat, gen_list),
+        # 1. Alargar / remover TEMPO (mantendo Rating, Ano, Género e Idade intactos!)
+        (dec_list, cert_list, ["ANY"], min_rat, gen_list),
+        # 2. Alargar RATING (mantendo Ano, Género e Idade intactos!)
+        (dec_list, cert_list, ["ANY"], max(8.0, min_rat - 0.3), gen_list),
+        (dec_list, cert_list, ["ANY"], 8.0, gen_list),
+        # 3. Alargar ANO (primeiro décadas vizinhas, depois todas, mantendo Género e Idade!)
+        (adj_decades, cert_list, ["ANY"], 8.0, gen_list),
+        (["ANY"], cert_list, ["ANY"], 8.0, gen_list),
+        # 4. Alargar GÉNERO (mantendo Restrição de Idade e Ano original primeiro)
+        (dec_list, cert_list, ["ANY"], 8.0, ["ANY"]),
+        (adj_decades, cert_list, ["ANY"], 8.0, ["ANY"]),
+        (["ANY"], cert_list, ["ANY"], 8.0, ["ANY"]),
+        # 5. Por último, alargar RESTRIÇÃO DE IDADE se ainda faltarem filmes
+        (["ANY"], ["ANY"], ["ANY"], 8.0, ["ANY"]),
+    ]
+
+    collected = []
+    seen_ids = set()
+
+    for d_step, c_step, dur_step, r_step, g_step in relaxation_steps:
+        step_movies = filter_movies_in_db(d_step, c_step, dur_step, r_step, g_step)
+        for m in step_movies:
+            if m[0] not in seen_ids:
+                seen_ids.add(m[0])
+                collected.append(m)
+        if len(collected) >= max(min_needed, 15):
+            break
+
+    return collected
+
+
+def get_player_round_movies(session_id, pool_movies, round_idx, player_order, num_players):
+    """
+    Garante que dentro de cada bloco de 3 rondas (9 filmes), cada jogador vê os
+    filmes numa ordem diferente dos outros jogadores!
+    """
+    block_num = round_idx // 3       # Bloco de 3 rondas (0 = rondas 1..3, 1 = rondas 4..6)
+    step_in_block = round_idx % 3    # 0, 1 ou 2
+
+    block_start = block_num * 9
+    block_movies = pool_movies[block_start : block_start + 9]
+
+    if not block_movies:
+        return []
+
+    # Se o bloco tiver 9 filmes, divide em 3 grupos de 3 e roda consoante o jogador
+    if len(block_movies) == 9:
+        sub_batches = [block_movies[0:3], block_movies[3:6], block_movies[6:9]]
+        # Desloca o lote consoante o número do jogador para não verem os mesmos 3 ao mesmo tempo
+        shifted_idx = (step_in_block + (player_order - 1)) % 3
+        chosen_batch = list(sub_batches[shifted_idx])
+        # Baralha também a posição dos 3 cartões de forma determinística para esse jogador
+        rng = random.Random(f"{session_id}_{round_idx}_{player_order}")
+        rng.shuffle(chosen_batch)
+        return chosen_batch
+
+    # Caso restem menos de 9 filmes no final do catálogo
+    start = step_in_block * 3
+    sub = list(block_movies[start : start + 3])
+    rng = random.Random(f"{session_id}_{round_idx}_{player_order}")
+    rng.shuffle(sub)
+    return sub
 
 
 @app.route("/session/<int:session_id>/movies")
@@ -500,6 +597,7 @@ def movies_round(session_id):
         players = cur.fetchall()
         num_players = len(players)
 
+        # Filmes que já têm 'Gosto' (1) de todos os jogadores e zero 'Não Gosto'/'Já Vi' (0, 2)
         cur.execute("""
             SELECT id_movie
             FROM public.movie_choice
@@ -512,35 +610,48 @@ def movies_round(session_id):
 
     conn.close()
 
-    if len(approved_ids) >= 3:
+    batch_key = f"batch_idx_{session_id}"
+    batch_idx = session.get(batch_key, 0)  # 0 = Ronda 1, 1 = Ronda 2, 2 = Ronda 3...
+
+    # REGRA: Faz SEMPRE pelo menos 3 rondas de decisão (batch_idx >= 3) antes de terminar!
+    if batch_idx >= 3 and len(approved_ids) >= 3:
         return finalize_top3_movies(session_id, round_id, approved_ids[:3])
 
-    all_matching = get_session_movie_pool(session_id, round_id)
-    batch_key = f"batch_idx_{session_id}"
-    batch_idx = session.get(batch_key, 0)
+    all_matching = get_session_movie_pool(session_id, round_id, min_needed=(batch_idx + 3) * 3)
 
-    start_pos = batch_idx * 3
-    current_batch = all_matching[start_pos : start_pos + 3]
-
-    if not current_batch:
-        return finalize_top3_fallback(session_id, round_id, all_matching)
-
-    batch_movie_ids = [m[0] for m in current_batch]
-
+    # Verificar qual jogador ainda não jogou nesta ronda (batch_idx)
     conn = get_connection()
     with conn.cursor() as cur:
         pending_player = None
+        player_movies = []
+
         for p in players:
+            p_id, p_order, p_name = p
+            candidate_movies = get_player_round_movies(session_id, all_matching, batch_idx, p_order, num_players)
+            if not candidate_movies:
+                continue
+
+            cand_ids = [m[0] for m in candidate_movies]
             cur.execute("""
-                SELECT COUNT(*) FROM public.movie_choice
+                SELECT COUNT(DISTINCT id_movie) FROM public.movie_choice
                 WHERE id_session = %s AND id_round = %s AND id_player = %s
                   AND id_movie = ANY(%s);
-            """, (session_id, round_id, p[0], batch_movie_ids))
-            if cur.fetchone()[0] < len(batch_movie_ids):
+            """, (session_id, round_id, p_id, cand_ids))
+            voted_count = cur.fetchone()[0]
+
+            if voted_count < len(cand_ids):
                 pending_player = p
+                player_movies = candidate_movies
                 break
     conn.close()
 
+    # Se não houver mais filmes disponíveis no catálogo
+    if not pending_player and not get_player_round_movies(session_id, all_matching, batch_idx, 1, num_players):
+        if len(approved_ids) >= 3:
+            return finalize_top3_movies(session_id, round_id, approved_ids[:3])
+        return finalize_top3_fallback(session_id, round_id, all_matching)
+
+    # Se todos os jogadores já concluíram a sua ronda atual, avança para a próxima ronda!
     if not pending_player:
         session[batch_key] = batch_idx + 1
         session.modified = True
@@ -550,7 +661,7 @@ def movies_round(session_id):
         "movies_round.html",
         session_id=session_id,
         player=pending_player,
-        movies=current_batch,
+        movies=player_movies,
         batch_num=batch_idx + 1,
         approved_count=len(approved_ids),
     )
@@ -647,7 +758,7 @@ def top3_voting(session_id):
         total_players = cur.fetchone()[0]
 
         cur.execute("""
-            SELECT m.id_movie, m.original_title, m.year, m.duration, m.rating, m.genres, m.poster_url
+            SELECT m.id_movie, m.original_title, m.year, m.duration, m.rating, m.genres, m.poster_url, m.plot
             FROM public.final_top3_movie f
             JOIN public.movie m ON m.id_movie = f.id_movie
             WHERE f.id_session = %s;
@@ -787,7 +898,7 @@ def winner_screen(session_id):
         cur.execute("""
             SELECT id_movie, current_rank, original_title, year, certificate,
                    duration, rating, vote_count, metascore, directors,
-                   writers, stars, genres, languages, countries, link, poster_url
+                   writers, stars, genres, languages, countries, link, poster_url, plot
             FROM public.movie
             WHERE id_movie = %s;
         """, (winning_movie_id,))
@@ -796,6 +907,241 @@ def winner_screen(session_id):
 
     reason_text = session.get(f"win_reason_{session_id}", "Filme Vencedor da Partida")
     return render_template("winner_movie.html", movie=movie, reason_text=reason_text)
+
+
+# =========================================================
+# ETAPA 7: DASHBOARD DE ADMIN (/admin)
+# =========================================================
+def counter_to_bars(counter_obj, limit=8):
+    items = counter_obj.most_common(limit)
+    if not items:
+        return []
+    max_val = max(c for _, c in items) or 1
+    return [(k, c, int((c / max_val) * 100)) for k, c in items]
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    error = None
+    if request.method == "POST":
+        entered_pw = request.form.get("password", "")
+        expected_pw = os.getenv("ADMIN_PASSWORD", "admin123").strip()
+        if entered_pw == expected_pw:
+            session["is_admin_authenticated"] = True
+            return redirect(url_for("admin_dashboard"))
+        error = "Password incorreta!"
+    return render_template("admin_login.html", error=error)
+
+
+@app.route("/admin/logout")
+def admin_logout():
+    session.pop("is_admin_authenticated", None)
+    return redirect(url_for("index"))
+
+
+def counter_to_bars(counter_obj, limit=12):
+    items = counter_obj.most_common(limit)
+    if not items:
+        return []
+    max_val = max(c for _, c in items) or 1
+    return [(k, c, int((c / max_val) * 100)) for k, c in items]
+
+
+@app.route("/admin")
+def admin_dashboard():
+    if not session.get("is_admin_authenticated"):
+        return redirect(url_for("admin_login"))
+
+    conn = get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM public.game_session;")
+        total_sessions = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM public.game_session WHERE status = 'FINISHED';")
+        finished_sessions = cur.fetchone()[0]
+
+        # Count de jogos de 2, 3 e 4 pessoas
+        cur.execute("SELECT num_players, COUNT(*) FROM public.game_session GROUP BY num_players;")
+        by_p = dict(cur.fetchall())
+        sessions_2p = by_p.get(2, 0)
+        sessions_3p = by_p.get(3, 0)
+        sessions_4p = by_p.get(4, 0)
+
+        cur.execute("SELECT COUNT(*) FROM public.movie_choice;")
+        total_movie_votes = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM public.tiebreaker_match WHERE game_type = 'TIC_TAC_TOE';")
+        ttt_matches = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM public.tiebreaker_match WHERE game_type = 'ROCK_PAPER_SCISSORS';")
+        rps_matches = cur.fetchone()[0]
+
+        # Ler todas as escolhas de filtros (Geral + Quando há disputa)
+        cur.execute("""
+            SELECT year_choice, duration_choice, certificate_choice,
+                   rating_choice, genres_choice, combat_category
+            FROM public.filter_choice;
+        """)
+
+        gen_decades = Counter()
+        gen_durations = Counter()
+        gen_certs = Counter()
+        gen_ratings = Counter()
+        gen_genres = Counter()
+
+        # Garantir que os 5 filtros aparecem sempre no gráfico de Filtros Disputados
+        combat_cats_count = {
+            "genres": 0,
+            "decades": 0,
+            "duration": 0,
+            "certificate": 0,
+            "rating": 0,
+        }
+        combat_spec = {
+            "genres": Counter(),
+            "decades": Counter(),
+            "duration": Counter(),
+            "certificate": Counter(),
+            "rating": Counter(),
+        }
+
+        for yr_c, dur_c, cert_c, rat_c, gen_c, comb_c in cur.fetchall():
+            # 1. Décadas (Geral)
+            dec_vals = [d.strip() for d in (yr_c or "ANY").split(",") if d.strip()]
+            for d in dec_vals:
+                gen_decades["Todas (Sem filtro)" if d == "ANY" else d] += 1
+
+            # 2. Duração (Geral)
+            dur_vals = [d.strip() for d in (dur_c or "ANY").split(",") if d.strip()]
+            for d in dur_vals:
+                gen_durations["Todas (Sem filtro)" if d == "ANY" else d] += 1
+
+            # 3. Restrição de Idade (Geral)
+            cert_val = "Qualquer Idade" if (not cert_c or cert_c == "ANY") else cert_c.strip()
+            gen_certs[cert_val] += 1
+
+            # 4. Rating (Geral)
+            rat_val = str(rat_c) if rat_c is not None else "8.0"
+            gen_ratings[rat_val] += 1
+
+            # 5. Género (Geral)
+            gen_vals = [g.strip() for g in (gen_c or "ANY").split(",") if g.strip()]
+            for g in gen_vals:
+                gen_genres["Todos (Sem filtro)" if g == "ANY" else g] += 1
+
+            # Se houve disputa escolhida no Jogo do Galo para esta linha:
+            if comb_c in combat_cats_count:
+                combat_cats_count[comb_c] += 1
+                if comb_c == "genres":
+                    for g in gen_vals:
+                        combat_spec["genres"]["Todos" if g == "ANY" else g] += 1
+                elif comb_c == "decades":
+                    for d in dec_vals:
+                        combat_spec["decades"]["Todas" if d == "ANY" else d] += 1
+                elif comb_c == "duration":
+                    for d in dur_vals:
+                        combat_spec["duration"]["Todas" if d == "ANY" else d] += 1
+                elif comb_c == "certificate":
+                    combat_spec["certificate"][cert_val] += 1
+                elif comb_c == "rating":
+                    combat_spec["rating"][rat_val] += 1
+
+        cat_labels = [
+            ("genres", "🎭 Género"),
+            ("decades", "📅 Ano (Décadas)"),
+            ("duration", "⏱️ Duração"),
+            ("certificate", "🔞 Restrição de Idade"),
+            ("rating", "⭐ Pontuação IMDb"),
+        ]
+        max_comb = max(combat_cats_count.values()) or 1
+        combat_overview = [
+            (label, combat_cats_count[key], int((combat_cats_count[key] / max_comb) * 100))
+            for key, label in cat_labels
+        ]
+        combat_overview.sort(key=lambda x: x[1], reverse=True)
+
+        # Estatísticas de Filmes
+        cur.execute("""
+            SELECT m.original_title, COUNT(*) AS cnt
+            FROM public.game_session gs
+            JOIN public.movie m ON m.id_movie = gs.winning_movie_id
+            GROUP BY m.original_title ORDER BY cnt DESC LIMIT 6;
+        """)
+        winning_movies = cur.fetchall()
+
+        cur.execute("""
+            SELECT m.original_title, COUNT(*) AS cnt
+            FROM public.movie_choice mc JOIN public.movie m ON m.id_movie = mc.id_movie
+            WHERE mc.vote_type = 1 GROUP BY m.original_title ORDER BY cnt DESC LIMIT 6;
+        """)
+        most_liked = cur.fetchall()
+
+        cur.execute("""
+            SELECT m.original_title, COUNT(*) AS cnt
+            FROM public.movie_choice mc JOIN public.movie m ON m.id_movie = mc.id_movie
+            WHERE mc.vote_type = 2 GROUP BY m.original_title ORDER BY cnt DESC LIMIT 6;
+        """)
+        most_seen = cur.fetchall()
+
+        cur.execute("""
+            SELECT m.original_title, COUNT(*) AS cnt
+            FROM public.movie_choice mc JOIN public.movie m ON m.id_movie = mc.id_movie
+            WHERE mc.vote_type = 0 GROUP BY m.original_title ORDER BY cnt DESC LIMIT 6;
+        """)
+        most_disliked = cur.fetchall()
+
+        cur.execute("""
+            SELECT gs.id_session, gs.created_at,
+                   STRING_AGG(sp.player_name, ', ' ORDER BY sp.player_order),
+                   gs.num_players, gs.status, m.original_title
+            FROM public.game_session gs
+            LEFT JOIN public.session_player sp ON sp.id_session = gs.id_session
+            LEFT JOIN public.movie m ON m.id_movie = gs.winning_movie_id
+            GROUP BY gs.id_session, gs.created_at, gs.num_players, gs.status, m.original_title
+            ORDER BY gs.id_session DESC LIMIT 10;
+        """)
+        recent_sessions = cur.fetchall()
+
+    conn.close()
+
+    kpis = {
+        "total_sessions": total_sessions,
+        "finished_sessions": finished_sessions,
+        "sessions_2p": sessions_2p,
+        "sessions_3p": sessions_3p,
+        "sessions_4p": sessions_4p,
+        "total_movie_votes": total_movie_votes,
+        "ttt_matches": ttt_matches,
+        "rps_matches": rps_matches,
+    }
+
+    general_filters = {
+        "genres": counter_to_bars(gen_genres),
+        "decades": counter_to_bars(gen_decades),
+        "durations": counter_to_bars(gen_durations),
+        "certificates": counter_to_bars(gen_certs),
+        "ratings": counter_to_bars(gen_ratings),
+    }
+
+    combat_specific = {
+        "genres": counter_to_bars(combat_spec["genres"]),
+        "decades": counter_to_bars(combat_spec["decades"]),
+        "duration": counter_to_bars(combat_spec["duration"]),
+        "certificate": counter_to_bars(combat_spec["certificate"]),
+        "rating": counter_to_bars(combat_spec["rating"]),
+    }
+
+    return render_template(
+        "admin_dashboard.html",
+        kpis=kpis,
+        general_filters=general_filters,
+        combat_overview=combat_overview,
+        combat_specific=combat_specific,
+        winning_movies=winning_movies,
+        most_liked=most_liked,
+        most_seen=most_seen,
+        most_disliked=most_disliked,
+        recent_sessions=recent_sessions,
+    )
 
 
 if __name__ == "__main__":

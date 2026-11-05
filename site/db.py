@@ -22,6 +22,12 @@ def ensure_schema_updates():
     conn = get_connection()
     with conn.cursor() as cur:
         cur.execute("""
+            ALTER TABLE public.movie
+            ADD COLUMN IF NOT EXISTS plot TEXT,
+            ADD COLUMN IF NOT EXISTS plot_pt TEXT,
+            ADD COLUMN IF NOT EXISTS plot_en TEXT,
+            ADD COLUMN IF NOT EXISTS plot_es TEXT;
+
             ALTER TABLE public.filter_choice
             ALTER COLUMN year_choice TYPE VARCHAR(100) USING year_choice::VARCHAR,
             ALTER COLUMN duration_choice TYPE VARCHAR(100) USING duration_choice::VARCHAR,
@@ -77,13 +83,17 @@ def get_dynamic_filter_options():
     return decades, certificates, genres
 
 
-def filter_movies_in_db(decades_list, cert_list, duration_list, min_rating, genres_list):
-    """Retorna os filmes completos do Top 250 que cumprem os filtros aplicados."""
+def filter_movies_in_db(decades_list, cert_list, duration_list, min_rating, genres_list, lang="pt"):
+    """Retorna os filmes do Top 250 com a sinopse já traduzida na língua pedida (índice 9)."""
+    plot_col = {"pt": "COALESCE(plot_pt, plot_en, plot)", "es": "COALESCE(plot_es, plot_en, plot)"}.get(
+        lang, "COALESCE(plot_en, plot)"
+    )
+
     conn = get_connection()
     with conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id_movie, original_title, year, certificate, duration,
-                   duration_minutes, rating, genres, poster_url
+                   duration_minutes, rating, genres, poster_url, {plot_col}
             FROM public.movie
             WHERE is_in_top250 = TRUE
             ORDER BY rating DESC, vote_count DESC;
@@ -93,20 +103,17 @@ def filter_movies_in_db(decades_list, cert_list, duration_list, min_rating, genr
 
     matching = []
     for m in all_movies:
-        m_id, title, year, cert, dur_str, dur_min, rating, m_genres, poster = m
+        m_id, title, year, cert, dur_str, dur_min, rating, m_genres, poster, plot_txt = m
 
-        # 1. Décadas ('ANY' ou vazio = todas)
         if decades_list and "ANY" not in decades_list and year:
             m_decade = f"{(int(year) // 10) * 10}s"
             if m_decade not in decades_list:
                 continue
 
-        # 2. Classificação Etária ('ANY' ou vazio = todas)
         if cert_list and "ANY" not in cert_list:
             if not cert or cert not in cert_list:
                 continue
 
-        # 3. Duração ('ANY' ou vazio = todas)
         if duration_list and "ANY" not in duration_list and dur_min is not None:
             dur_ok = False
             for d_code in duration_list:
@@ -121,12 +128,10 @@ def filter_movies_in_db(decades_list, cert_list, duration_list, min_rating, genr
             if not dur_ok:
                 continue
 
-        # 4. Rating mínimo
         if min_rating and rating is not None:
             if float(rating) < float(min_rating):
                 continue
 
-        # 5. Géneros ('ANY' ou vazio = todos)
         if genres_list and "ANY" not in genres_list and m_genres:
             movie_g_set = {g.strip() for g in m_genres.split(",")}
             if not movie_g_set.intersection(set(genres_list)):
