@@ -1,20 +1,56 @@
+import hmac
 import os
 import random
+import time
 from collections import Counter
-from translations import TRANSLATIONS
 from flask import Flask, redirect, render_template, render_template_string, request, session, url_for
-from db import (ensure_schema_updates, filter_movies_in_db, get_connection, get_dynamic_filter_options,)
+from translations import GENRE_MAP, TRANSLATIONS, translate_genres_str
+from db import (
+    ALL_DURATION_CODES,
+    ensure_schema_updates,
+    filter_movies_in_db,
+    get_db_connection,
+    get_dynamic_filter_options,
+)
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "chave_secreta_imdb_game_2026")
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 ensure_schema_updates()
+
+# Proteção contra Brute-Force no Login de Admin
+_ADMIN_FAILED_ATTEMPTS = {}
+MAX_LOGIN_ATTEMPTS = 5
+LOCKOUT_SECONDS = 60
+
+
+@app.after_request
+def add_security_and_no_cache_headers(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    return response
 
 
 @app.context_processor
 def inject_translations():
     lang = session.get("lang", "pt")
-    return {"t": TRANSLATIONS.get(lang, TRANSLATIONS["pt"]), "lang": lang}
+    return {
+        "t": TRANSLATIONS.get(lang, TRANSLATIONS["pt"]),
+        "lang": lang,
+        "tr_genres": translate_genres_str,
+    }
+
+
+def get_plot_column(lang):
+    return {
+        "pt": "COALESCE(NULLIF(TRIM(m.plot_pt), ''), NULLIF(TRIM(m.plot_en), ''), m.plot)",
+        "es": "COALESCE(NULLIF(TRIM(m.plot_es), ''), NULLIF(TRIM(m.plot_en), ''), m.plot)",
+    }.get(lang, "COALESCE(NULLIF(TRIM(m.plot_en), ''), m.plot)")
 
 
 @app.route("/set_lang/<lang_code>")
@@ -26,19 +62,18 @@ def set_language(lang_code):
 
 @app.route("/")
 def index():
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT original_title, poster_url
-            FROM public.movie
-            WHERE is_in_top250 = TRUE
-            ORDER BY rating DESC, vote_count DESC
-            LIMIT 3;
-        """)
-        top_movies = cur.fetchall()
-        cur.execute("SELECT COUNT(*) FROM public.movie WHERE is_in_top250 = TRUE;")
-        total_movies = cur.fetchone()[0]
-    conn.close()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT original_title, poster_url
+                FROM public.movie
+                WHERE is_in_top250 = TRUE
+                ORDER BY rating DESC, vote_count DESC
+                LIMIT 3;
+            """)
+            top_movies = cur.fetchall()
+            cur.execute("SELECT COUNT(*) FROM public.movie WHERE is_in_top250 = TRUE;")
+            total_movies = cur.fetchone()[0]
     return render_template("landing.html", top_movies=top_movies, total_movies=total_movies)
 
 
@@ -49,9 +84,14 @@ def setup_page():
 
 @app.route("/start_game", methods=["POST"])
 def start_game():
-    num_players = int(request.form.get("num_players", 2))
+    try:
+        num_players = int(request.form.get("num_players", 2))
+    except ValueError:
+        num_players = 2
+    num_players = max(2, min(4, num_players))
+
     player_names = [
-        request.form.get(f"player_{i}", "").strip()
+        request.form.get(f"player_{i}", "").strip()[:50]
         for i in range(1, num_players + 1)
         if request.form.get(f"player_{i}", "").strip()
     ]
@@ -59,84 +99,90 @@ def start_game():
     if len(player_names) < 2:
         return redirect(url_for("index"))
 
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("""
-            INSERT INTO public.game_session (num_players, status)
-            VALUES (%s, 'FILTERING')
-            RETURNING id_session;
-        """, (len(player_names),))
-        session_id = cur.fetchone()[0]
-
-        for idx, name in enumerate(player_names, start=1):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO public.session_player (id_session, player_order, player_name)
-                VALUES (%s, %s, %s);
-            """, (session_id, idx, name))
+                INSERT INTO public.game_session (num_players, status)
+                VALUES (%s, 'FILTERING')
+                RETURNING id_session;
+            """, (len(player_names),))
+            session_id = cur.fetchone()[0]
 
-        cur.execute("""
-            INSERT INTO public.filter_round (id_session, round_number)
-            VALUES (%s, 1);
-        """, (session_id,))
+            for idx, name in enumerate(player_names, start=1):
+                cur.execute("""
+                    INSERT INTO public.session_player (id_session, player_order, player_name)
+                    VALUES (%s, %s, %s);
+                """, (session_id, idx, name))
 
-    conn.commit()
-    conn.close()
+            cur.execute("""
+                INSERT INTO public.filter_round (id_session, round_number)
+                VALUES (%s, 1);
+            """, (session_id,))
+        conn.commit()
+
     return redirect(url_for("session_filters", session_id=session_id))
 
 
 @app.route("/session/<int:session_id>/filters", methods=["GET", "POST"])
 def session_filters(session_id):
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT id_round FROM public.filter_round
-            WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;
-        """, (session_id,))
-        round_row = cur.fetchone()
-        if not round_row:
-            conn.close()
-            return redirect(url_for("index"))
-        round_id = round_row[0]
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id_round FROM public.filter_round
+                WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;
+            """, (session_id,))
+            round_row = cur.fetchone()
+            if not round_row:
+                return redirect(url_for("index"))
+            round_id = round_row[0]
 
-        if request.method == "POST":
-            id_player = int(request.form.get("id_player"))
-            decades_list = request.form.getlist("decades")[:3]
-            duration_list = request.form.getlist("duration")[:2]
-            genres_list = request.form.getlist("genres")[:3]
+            if request.method == "POST":
+                id_player = int(request.form.get("id_player"))
+                decades_list = request.form.getlist("decades")[:3]
+                duration_list = request.form.getlist("duration")[:2]
+                genres_list = request.form.getlist("genres")[:3]
 
-            decades_str = ",".join(decades_list) if decades_list else "ANY"
-            duration_str = ",".join(duration_list) if duration_list else "ANY"
-            genres_str = ",".join(genres_list) if genres_list else "ANY"
+                decades_str = ",".join(decades_list) if decades_list else "ANY"
+                duration_str = ",".join(duration_list) if duration_list else "ANY"
+                genres_str = ",".join(genres_list) if genres_list else "ANY"
 
-            certificate = request.form.get("certificate", "ANY")
-            rating = float(request.form.get("rating", 8.0))
+                certificate = request.form.get("certificate", "ANY")
+                rating = float(request.form.get("rating", 8.0))
+
+                cur.execute("""
+                    INSERT INTO public.filter_choice (
+                        id_round, id_player, year_choice, certificate_choice,
+                        duration_choice, rating_choice, genres_choice
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id_round, id_player) DO UPDATE SET
+                        year_choice = EXCLUDED.year_choice,
+                        certificate_choice = EXCLUDED.certificate_choice,
+                        duration_choice = EXCLUDED.duration_choice,
+                        rating_choice = EXCLUDED.rating_choice,
+                        genres_choice = EXCLUDED.genres_choice;
+                """, (round_id, id_player, decades_str, certificate, duration_str, rating, genres_str))
+                conn.commit()
 
             cur.execute("""
-                INSERT INTO public.filter_choice (
-                    id_round, id_player, year_choice, certificate_choice,
-                    duration_choice, rating_choice, genres_choice
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s);
-            """, (round_id, id_player, decades_str, certificate, duration_str, rating, genres_str))
-            conn.commit()
+                SELECT sp.id_player, sp.player_order, sp.player_name
+                FROM public.session_player sp
+                WHERE sp.id_session = %s
+                  AND sp.id_player NOT IN (
+                      SELECT id_player FROM public.filter_choice WHERE id_round = %s
+                  )
+                ORDER BY sp.player_order ASC;
+            """, (session_id, round_id))
+            pending_players = cur.fetchall()
 
-        cur.execute("""
-            SELECT sp.id_player, sp.player_order, sp.player_name
-            FROM public.session_player sp
-            WHERE sp.id_session = %s
-              AND sp.id_player NOT IN (
-                  SELECT id_player FROM public.filter_choice WHERE id_round = %s
-              )
-            ORDER BY sp.player_order ASC;
-        """, (session_id, round_id))
-        pending_players = cur.fetchall()
-
-        cur.execute("SELECT COUNT(*) FROM public.session_player WHERE id_session = %s;", (session_id,))
-        total_players = cur.fetchone()[0]
-
-    conn.close()
+            cur.execute("SELECT COUNT(*) FROM public.session_player WHERE id_session = %s;", (session_id,))
+            total_players = cur.fetchone()[0]
 
     if pending_players:
-        decades, certificates, genres = get_dynamic_filter_options()
+        lang = session.get("lang", "pt")
+        decades, certificates, raw_genres = get_dynamic_filter_options()
+        genre_map = GENRE_MAP.get(lang, {})
+        genres_localized = [(g, genre_map.get(g, g)) for g in raw_genres]
+
         return render_template(
             "filters.html",
             session_id=session_id,
@@ -144,19 +190,13 @@ def session_filters(session_id):
             total_players=total_players,
             decades=decades,
             certificates=certificates,
-            genres=genres,
+            genres=genres_localized,
         )
 
     return redirect(url_for("evaluate_filters", session_id=session_id))
 
 
 def compute_merged_filters(choices, winning_category=None, winner_choice=None):
-    """
-    Apenas a 'winning_category' (o filtro que o vencedor escolheu defender) fica
-    100% igual ao do vencedor. Todos os outros 4 filtros (mesmo os escolhidos pelos
-    adversários derrotados) são misturados/unidos entre os jogadores!
-    """
-    # 1. Décadas (Ano)
     if winning_category == "decades" and winner_choice:
         final_decades = winner_choice["decades"]
     else:
@@ -168,7 +208,6 @@ def compute_merged_filters(choices, winning_category=None, winner_choice=None):
                 s.update(c["decades"].split(","))
             final_decades = ",".join(sorted(s))
 
-    # 2. Duração
     if winning_category == "duration" and winner_choice:
         final_duration = winner_choice["duration"]
     else:
@@ -180,7 +219,6 @@ def compute_merged_filters(choices, winning_category=None, winner_choice=None):
                 s.update(c["duration"].split(","))
             final_duration = ",".join(sorted(s))
 
-    # 3. Idade (Certificate)
     if winning_category == "certificate" and winner_choice:
         final_cert = winner_choice["certificate"]
     else:
@@ -189,13 +227,11 @@ def compute_merged_filters(choices, winning_category=None, winner_choice=None):
         else:
             final_cert = ",".join(sorted({c["certificate"] for c in choices}))
 
-    # 4. Rating (Quando misturado, usa o menor rating para abranger os filmes de todos)
     if winning_category == "rating" and winner_choice:
         final_rating = float(winner_choice["rating"])
     else:
         final_rating = min(float(c["rating"]) for c in choices)
 
-    # 5. Géneros
     if winning_category == "genres" and winner_choice:
         final_genres = winner_choice["genres"]
     else:
@@ -218,73 +254,100 @@ def compute_merged_filters(choices, winning_category=None, winner_choice=None):
 
 @app.route("/session/<int:session_id>/filters/result")
 def evaluate_filters(session_id):
+    lang = session.get("lang", "pt")
     all_decades, _, all_genres = get_dynamic_filter_options()
-    all_durations = ["<1h30", "=2h", "=2h30", ">2h30"]
+    all_durations = sorted(ALL_DURATION_CODES)
 
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT id_round FROM public.filter_round
-            WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;
-        """, (session_id,))
-        round_id = cur.fetchone()[0]
-
-        cur.execute("""
-            SELECT sp.id_player, sp.player_name, fc.year_choice, fc.duration_choice,
-                   fc.certificate_choice, fc.rating_choice, fc.genres_choice
-            FROM public.filter_choice fc
-            JOIN public.session_player sp ON sp.id_player = fc.id_player
-            WHERE fc.id_round = %s
-            ORDER BY sp.player_order ASC;
-        """, (round_id,))
-        rows = cur.fetchall()
-
-        decade_sets = [set(all_decades) if r[2] == "ANY" else set(r[2].split(",")) for r in rows]
-        dur_sets = [set(all_durations) if r[3] == "ANY" else set(r[3].split(",")) for r in rows]
-        genre_sets = [set(all_genres) if r[6] == "ANY" else set(r[6].split(",")) for r in rows]
-
-        common_decades = set.intersection(*decade_sets) if decade_sets else set()
-        common_durations = set.intersection(*dur_sets) if dur_sets else set()
-        common_genres = set.intersection(*genre_sets) if genre_sets else set()
-        cert_set = {r[4] for r in rows if r[4] and r[4] != "ANY"}
-        max_rating = max(float(r[5]) for r in rows)
-
-        matching_strict = filter_movies_in_db(
-            list(common_decades) if common_decades else ["__NONE__"],
-            list(cert_set) if len(cert_set) <= 1 else ["__NONE__"],
-            list(common_durations) if common_durations else ["__NONE__"],
-            max_rating,
-            list(common_genres) if common_genres else ["__NONE__"],
-        )
-
-        had_conflict = len(matching_strict) < 3
-
-        if not had_conflict:
-            choice_dicts = [
-                {
-                    "decades": r[2], "duration": r[3], "certificate": r[4],
-                    "rating": r[5], "genres": r[6]
-                }
-                for r in rows
-            ]
-            merged = compute_merged_filters(choice_dicts)
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
             cur.execute("""
-                UPDATE public.filter_round
-                SET had_conflict = FALSE,
-                    applied_decades = %s, applied_duration_code = %s,
-                    applied_certificate = %s, applied_min_rating = %s, applied_genre = %s
-                WHERE id_round = %s;
-            """, (
-                merged["decades"], merged["duration"], merged["certificate"],
-                merged["rating"], merged["genres"], round_id,
-            ))
-            cur.execute("UPDATE public.game_session SET status = 'SWIPING' WHERE id_session = %s;", (session_id,))
-        else:
-            cur.execute("UPDATE public.filter_round SET had_conflict = TRUE WHERE id_round = %s;", (round_id,))
-            cur.execute("UPDATE public.game_session SET status = 'TIE_FILTER' WHERE id_session = %s;", (session_id,))
+                SELECT id_round FROM public.filter_round
+                WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;
+            """, (session_id,))
+            round_row = cur.fetchone()
+            if not round_row:
+                return redirect(url_for("index"))
+            round_id = round_row[0]
 
-    conn.commit()
-    conn.close()
+            cur.execute("""
+                SELECT sp.id_player, sp.player_name, fc.year_choice, fc.duration_choice,
+                       fc.certificate_choice, fc.rating_choice, fc.genres_choice
+                FROM public.filter_choice fc
+                JOIN public.session_player sp ON sp.id_player = fc.id_player
+                WHERE fc.id_round = %s
+                ORDER BY sp.player_order ASC;
+            """, (round_id,))
+            rows = cur.fetchall()
+
+            if not rows:
+                return redirect(url_for("session_filters", session_id=session_id))
+
+            if all(r[2] == "ANY" for r in rows):
+                strict_decades = ["ANY"]
+            else:
+                decade_sets = [set(all_decades) if r[2] == "ANY" else set(r[2].split(",")) for r in rows]
+                common_decades = set.intersection(*decade_sets) if decade_sets else set()
+                strict_decades = list(common_decades) if common_decades else ["__NONE__"]
+
+            if all(r[3] == "ANY" for r in rows):
+                strict_durations = ["ANY"]
+            else:
+                dur_sets = [set(all_durations) if r[3] == "ANY" else set(r[3].split(",")) for r in rows]
+                common_durations = set.intersection(*dur_sets) if dur_sets else set()
+                strict_durations = list(common_durations) if common_durations else ["__NONE__"]
+
+            if all(r[6] == "ANY" for r in rows):
+                strict_genres = ["ANY"]
+            else:
+                genre_sets = [set(all_genres) if r[6] == "ANY" else set(r[6].split(",")) for r in rows]
+                common_genres = set.intersection(*genre_sets) if genre_sets else set()
+                strict_genres = list(common_genres) if common_genres else ["__NONE__"]
+
+            cert_set = {r[4] for r in rows if r[4] and r[4] != "ANY"}
+            if not cert_set:
+                strict_certs = ["ANY"]
+            elif len(cert_set) == 1:
+                strict_certs = list(cert_set)
+            else:
+                strict_certs = ["__NONE__"]
+
+            max_rating = max(float(r[5]) for r in rows)
+
+            matching_strict = filter_movies_in_db(
+                strict_decades,
+                strict_certs,
+                strict_durations,
+                max_rating,
+                strict_genres,
+                lang=lang,
+            )
+
+            had_conflict = len(matching_strict) < 3
+
+            if not had_conflict:
+                choice_dicts = [
+                    {
+                        "decades": r[2], "duration": r[3], "certificate": r[4],
+                        "rating": r[5], "genres": r[6]
+                    }
+                    for r in rows
+                ]
+                merged = compute_merged_filters(choice_dicts)
+                cur.execute("""
+                    UPDATE public.filter_round
+                    SET had_conflict = FALSE,
+                        applied_decades = %s, applied_duration_code = %s,
+                        applied_certificate = %s, applied_min_rating = %s, applied_genre = %s
+                    WHERE id_round = %s;
+                """, (
+                    merged["decades"], merged["duration"], merged["certificate"],
+                    merged["rating"], merged["genres"], round_id,
+                ))
+                cur.execute("UPDATE public.game_session SET status = 'SWIPING' WHERE id_session = %s;", (session_id,))
+            else:
+                cur.execute("UPDATE public.filter_round SET had_conflict = TRUE WHERE id_round = %s;", (round_id,))
+                cur.execute("UPDATE public.game_session SET status = 'TIE_FILTER' WHERE id_session = %s;", (session_id,))
+        conn.commit()
 
     return render_template(
         "filter_summary.html",
@@ -297,35 +360,32 @@ def evaluate_filters(session_id):
 
 @app.route("/session/<int:session_id>/tictactoe/start", methods=["POST"])
 def tictactoe_start(session_id):
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("SELECT id_round FROM public.filter_round WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;", (session_id,))
-        round_id = cur.fetchone()[0]
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id_round FROM public.filter_round WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;", (session_id,))
+            round_id = cur.fetchone()[0]
 
-        cur.execute("SELECT id_player, player_name FROM public.session_player WHERE id_session = %s ORDER BY player_order ASC;", (session_id,))
-        players = cur.fetchall()
+            cur.execute("SELECT id_player, player_name FROM public.session_player WHERE id_session = %s ORDER BY player_order ASC;", (session_id,))
+            players = cur.fetchall()
 
-        used_stakes = set()
-        all_cats = ["genres", "decades", "duration", "rating", "certificate"]
+            used_stakes = set()
+            all_cats = ["genres", "decades", "duration", "rating", "certificate"]
 
-        for p_id, _ in players:
-            stake = request.form.get(f"stake_{p_id}", "genres")
-            # Garante também no servidor que dois jogadores nunca ficam com o mesmo filtro
-            if stake in used_stakes:
-                for fallback in all_cats:
-                    if fallback not in used_stakes:
-                        stake = fallback
-                        break
-            used_stakes.add(stake)
+            for p_id, _ in players:
+                stake = request.form.get(f"stake_{p_id}", "genres")
+                if stake in used_stakes:
+                    for fallback in all_cats:
+                        if fallback not in used_stakes:
+                            stake = fallback
+                            break
+                used_stakes.add(stake)
 
-            cur.execute("""
-                UPDATE public.filter_choice
-                SET combat_category = %s
-                WHERE id_round = %s AND id_player = %s;
-            """, (stake, round_id, p_id))
-
-    conn.commit()
-    conn.close()
+                cur.execute("""
+                    UPDATE public.filter_choice
+                    SET combat_category = %s
+                    WHERE id_round = %s AND id_player = %s;
+                """, (stake, round_id, p_id))
+        conn.commit()
 
     session[f"ttt_queue_{session_id}"] = [[p[0], p[1]] for p in players]
     return redirect(url_for("tictactoe_arena", session_id=session_id))
@@ -335,19 +395,20 @@ def tictactoe_start(session_id):
 def tictactoe_arena(session_id):
     queue_key = f"ttt_queue_{session_id}"
     if queue_key not in session:
-        conn = get_connection()
-        with conn.cursor() as cur:
-            cur.execute("SELECT id_player, player_name FROM public.session_player WHERE id_session = %s ORDER BY player_order ASC;", (session_id,))
-            players = cur.fetchall()
-        conn.close()
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id_player, player_name FROM public.session_player WHERE id_session = %s ORDER BY player_order ASC;", (session_id,))
+                players = cur.fetchall()
         session[queue_key] = [[p[0], p[1]] for p in players]
 
     queue = session[queue_key]
     if len(queue) == 1:
         return redirect(url_for("apply_winner_filter", session_id=session_id, winner_id=queue[0][0]))
 
+    lang = session.get("lang", "pt")
+    t = TRANSLATIONS.get(lang, TRANSLATIONS["pt"])
     p1, p2 = queue[0], queue[1]
-    match_title = "Grande Final" if len(queue) == 2 else f"Eliminatória ({len(queue)} Jogadores)"
+    match_title = t["ttt_final"] if len(queue) == 2 else f"{t['ttt_elim']} ({len(queue)} {t['player_label']}s)"
     return render_template("tictactoe.html", session_id=session_id, p1=p1, p2=p2, match_title=match_title)
 
 
@@ -357,19 +418,18 @@ def tictactoe_record(session_id):
     p2_id = int(request.form.get("p2_id"))
     winner_id = int(request.form.get("winner_id"))
 
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("SELECT id_round FROM public.filter_round WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;", (session_id,))
-        round_id = cur.fetchone()[0]
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id_round FROM public.filter_round WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;", (session_id,))
+            round_id = cur.fetchone()[0]
 
-        cur.execute("""
-            INSERT INTO public.tiebreaker_match (
-                id_session, id_round, game_type, stage,
-                player1_id, player2_id, winner_player_id
-            ) VALUES (%s, %s, 'TIC_TAC_TOE', 'FILTER_CONFLICT', %s, %s, %s);
-        """, (session_id, round_id, p1_id, p2_id, winner_id))
-    conn.commit()
-    conn.close()
+            cur.execute("""
+                INSERT INTO public.tiebreaker_match (
+                    id_session, id_round, game_type, stage,
+                    player1_id, player2_id, winner_player_id
+                ) VALUES (%s, %s, 'TIC_TAC_TOE', 'FILTER_CONFLICT', %s, %s, %s);
+            """, (session_id, round_id, p1_id, p2_id, winner_id))
+        conn.commit()
 
     queue_key = f"ttt_queue_{session_id}"
     queue = session.get(queue_key, [])
@@ -384,74 +444,74 @@ def tictactoe_record(session_id):
 
 @app.route("/session/<int:session_id>/tictactoe/winner/<int:winner_id>")
 def apply_winner_filter(session_id, winner_id):
-    """
-    Aplica a 100% APENAS a categoria escolhida pelo vencedor (winning_category).
-    Todas as restantes categorias (incluindo as dos derrotados) ficam misturadas!
-    """
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("SELECT id_round FROM public.filter_round WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;", (session_id,))
-        round_id = cur.fetchone()[0]
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id_round FROM public.filter_round WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;", (session_id,))
+            round_id = cur.fetchone()[0]
 
-        cur.execute("""
-            SELECT sp.id_player, sp.player_name, fc.year_choice, fc.duration_choice,
-                   fc.certificate_choice, fc.rating_choice, fc.genres_choice, fc.combat_category
-            FROM public.filter_choice fc
-            JOIN public.session_player sp ON sp.id_player = fc.id_player
-            WHERE fc.id_round = %s;
-        """, (round_id,))
-        rows = cur.fetchall()
+            cur.execute("""
+                SELECT sp.id_player, sp.player_name, fc.year_choice, fc.duration_choice,
+                       fc.certificate_choice, fc.rating_choice, fc.genres_choice, fc.combat_category
+                FROM public.filter_choice fc
+                JOIN public.session_player sp ON sp.id_player = fc.id_player
+                WHERE fc.id_round = %s;
+            """, (round_id,))
+            rows = cur.fetchall()
 
-        choice_dicts = []
-        winner_choice = None
-        winner_name = ""
-        winning_category = None
+            choice_dicts = []
+            winner_choice = None
+            winner_name = ""
+            winning_category = None
 
-        for r in rows:
-            c_dict = {
-                "id_player": r[0], "name": r[1], "decades": r[2],
-                "duration": r[3], "certificate": r[4], "rating": r[5],
-                "genres": r[6], "combat": r[7] or "genres",
-            }
-            choice_dicts.append(c_dict)
-            if r[0] == winner_id:
-                winner_choice = c_dict
-                winner_name = r[1]
-                winning_category = c_dict["combat"]
+            for r in rows:
+                c_dict = {
+                    "id_player": r[0], "name": r[1], "decades": r[2],
+                    "duration": r[3], "certificate": r[4], "rating": r[5],
+                    "genres": r[6], "combat": r[7] or "genres",
+                }
+                choice_dicts.append(c_dict)
+                if r[0] == winner_id:
+                    winner_choice = c_dict
+                    winner_name = r[1]
+                    winning_category = c_dict["combat"]
 
-        merged = compute_merged_filters(choice_dicts, winning_category, winner_choice)
+            merged = compute_merged_filters(choice_dicts, winning_category, winner_choice)
 
-        cur.execute("""
-            UPDATE public.filter_round
-            SET winning_player_id = %s,
-                applied_decades = %s,
-                applied_duration_code = %s,
-                applied_certificate = %s,
-                applied_min_rating = %s,
-                applied_genre = %s
-            WHERE id_round = %s;
-        """, (
-            winner_id, merged["decades"], merged["duration"],
-            merged["certificate"], merged["rating"], merged["genres"], round_id,
-        ))
-        cur.execute("UPDATE public.game_session SET status = 'SWIPING' WHERE id_session = %s;", (session_id,))
-    conn.commit()
-    conn.close()
+            cur.execute("""
+                UPDATE public.filter_round
+                SET winning_player_id = %s,
+                    applied_decades = %s,
+                    applied_duration_code = %s,
+                    applied_certificate = %s,
+                    applied_min_rating = %s,
+                    applied_genre = %s
+                WHERE id_round = %s;
+            """, (
+                winner_id, merged["decades"], merged["duration"],
+                merged["certificate"], merged["rating"], merged["genres"], round_id,
+            ))
+            cur.execute("UPDATE public.game_session SET status = 'SWIPING' WHERE id_session = %s;", (session_id,))
+        conn.commit()
 
     session.pop(f"batch_idx_{session_id}", None)
 
+    lang = session.get("lang", "pt")
+    t = TRANSLATIONS.get(lang, TRANSLATIONS["pt"])
     cat_names = {
-        "genres": "Género", "decades": "Ano", "duration": "Duração",
-        "rating": "Pontuação", "certificate": "Restrição de Idade"
+        "genres": t["col_gen"],
+        "decades": t["col_year"],
+        "duration": t["col_dur"],
+        "rating": t["col_rat"],
+        "certificate": t["col_age"],
     }
     won_cat_label = cat_names.get(winning_category, winning_category)
 
     return render_template_string("""
     <!DOCTYPE html>
-    <html lang="pt">
+    <html lang="{{ lang }}">
     <head>
         <meta charset="UTF-8">
-        <title>Filtro Vencedor</title>
+        <title>{{ winner_name }} - {{ t.ttt_title }}</title>
         <style>
             body { background:#121212; color:#fff; font-family:'Segoe UI',sans-serif; text-align:center; padding:60px 20px; }
             .card { max-width:560px; margin:0 auto; background:#1e1e1e; padding:32px; border-radius:14px; border:1px solid #f5c518; }
@@ -461,26 +521,23 @@ def apply_winner_filter(session_id, winner_id):
     </head>
     <body>
         <div class="card">
-            <h1>🏆 {{ winner_name }} venceu o Jogo do Galo!</h1>
-            <p>Filtro exclusivo de <strong>{{ winner_name }}</strong> (100%): <strong>{{ won_cat_label }}</strong></p>
-            <p style="color:#aaa; font-size:0.92rem;">Todos os outros filtros foram misturados entre o grupo:</p>
+            <h1>🏆 {{ winner_name }} {{ t.ttt_champ_title }}</h1>
+            <p>{{ t.ttt_excl_filter }} <strong>{{ won_cat_label }}</strong></p>
+            <p style="color:#aaa; font-size:0.92rem;">{{ t.ttt_mixed_info }}</p>
             <p style="color:#eee;">
-                <strong>Ano:</strong> {{ 'Todos' if merged.decades == 'ANY' else merged.decades }} |
-                <strong>Duração:</strong> {{ 'Todas' if merged.duration == 'ANY' else merged.duration }} |
-                <strong>Rating:</strong> ⭐ {{ merged.rating }}+ |
-                <strong>Género:</strong> {{ 'Todos' if merged.genres == 'ANY' else merged.genres }}
+                <strong>{{ t.col_year }}:</strong> {{ t.val_all_m if merged.decades == 'ANY' else merged.decades }} |
+                <strong>{{ t.col_dur }}:</strong> {{ t.val_all_f if merged.duration == 'ANY' else merged.duration }} |
+                <strong>{{ t.col_rat }}:</strong> ⭐ {{ merged.rating }}+ |
+                <strong>{{ t.col_gen }}:</strong> {{ t.val_all_m if merged.genres == 'ANY' else tr_genres(merged.genres, lang) }}
             </p>
-            <a href="/session/{{ session_id }}/movies" class="btn">Escolher Filmes (Etapa 5) ➔</a>
+            <a href="/session/{{ session_id }}/movies" class="btn">{{ t.btn_go_movies }}</a>
         </div>
     </body>
     </html>
     """, winner_name=winner_name, won_cat_label=won_cat_label, merged=merged, session_id=session_id)
 
-# =========================================================
-# ETAPA 5: RONDAS DE 3 FILMES (COM NOVA HIERARQUIA E ROTAÇÃO)
-# =========================================================
+
 def expand_adjacent_decades(dec_list):
-    """Adiciona uma década antes e uma depois para dar margem ao Ano sem mostrar filmes de 1920."""
     if not dec_list or "ANY" in dec_list:
         return ["ANY"]
     expanded = set(dec_list)
@@ -494,21 +551,15 @@ def expand_adjacent_decades(dec_list):
     return sorted(expanded)
 
 
-def get_session_movie_pool(session_id, round_id, min_needed=9):
-    """
-    Aplica a hierarquia de relaxamento pedida (do que tem MAIS margem para o que tem MENOS margem):
-    1. Tempo (Duração) -> 2. Rating -> 3. Ano -> 4. Género -> 5. Restrição de Idade
-    Garante pelo menos 'min_needed' filmes (9 filmes = 3 rondas de 3 filmes) sem duplicar.
-    """
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT applied_decades, applied_certificate, applied_duration_code,
-                   applied_min_rating, applied_genre
-            FROM public.filter_round WHERE id_round = %s;
-        """, (round_id,))
-        row = cur.fetchone()
-    conn.close()
+def get_session_movie_pool(session_id, round_id, min_needed=9, lang="pt"):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT applied_decades, applied_certificate, applied_duration_code,
+                       applied_min_rating, applied_genre
+                FROM public.filter_round WHERE id_round = %s;
+            """, (round_id,))
+            row = cur.fetchone()
 
     dec_list = row[0].split(",") if row[0] and row[0] != "ANY" else ["ANY"]
     cert_list = row[1].split(",") if row[1] and row[1] != "ANY" else ["ANY"]
@@ -518,23 +569,16 @@ def get_session_movie_pool(session_id, round_id, min_needed=9):
 
     adj_decades = expand_adjacent_decades(dec_list)
 
-    # Lista progressiva de tentativas respeitando: Tempo -> Rating -> Ano -> Género -> Idade
     relaxation_steps = [
-        # 0. Filtros exatos
         (dec_list, cert_list, dur_list, min_rat, gen_list),
-        # 1. Alargar / remover TEMPO (mantendo Rating, Ano, Género e Idade intactos!)
         (dec_list, cert_list, ["ANY"], min_rat, gen_list),
-        # 2. Alargar RATING (mantendo Ano, Género e Idade intactos!)
         (dec_list, cert_list, ["ANY"], max(8.0, min_rat - 0.3), gen_list),
         (dec_list, cert_list, ["ANY"], 8.0, gen_list),
-        # 3. Alargar ANO (primeiro décadas vizinhas, depois todas, mantendo Género e Idade!)
         (adj_decades, cert_list, ["ANY"], 8.0, gen_list),
         (["ANY"], cert_list, ["ANY"], 8.0, gen_list),
-        # 4. Alargar GÉNERO (mantendo Restrição de Idade e Ano original primeiro)
         (dec_list, cert_list, ["ANY"], 8.0, ["ANY"]),
         (adj_decades, cert_list, ["ANY"], 8.0, ["ANY"]),
         (["ANY"], cert_list, ["ANY"], 8.0, ["ANY"]),
-        # 5. Por último, alargar RESTRIÇÃO DE IDADE se ainda faltarem filmes
         (["ANY"], ["ANY"], ["ANY"], 8.0, ["ANY"]),
     ]
 
@@ -542,7 +586,7 @@ def get_session_movie_pool(session_id, round_id, min_needed=9):
     seen_ids = set()
 
     for d_step, c_step, dur_step, r_step, g_step in relaxation_steps:
-        step_movies = filter_movies_in_db(d_step, c_step, dur_step, r_step, g_step)
+        step_movies = filter_movies_in_db(d_step, c_step, dur_step, r_step, g_step, lang=lang)
         for m in step_movies:
             if m[0] not in seen_ids:
                 seen_ids.add(m[0])
@@ -554,12 +598,8 @@ def get_session_movie_pool(session_id, round_id, min_needed=9):
 
 
 def get_player_round_movies(session_id, pool_movies, round_idx, player_order, num_players):
-    """
-    Garante que dentro de cada bloco de 3 rondas (9 filmes), cada jogador vê os
-    filmes numa ordem diferente dos outros jogadores!
-    """
-    block_num = round_idx // 3       # Bloco de 3 rondas (0 = rondas 1..3, 1 = rondas 4..6)
-    step_in_block = round_idx % 3    # 0, 1 ou 2
+    block_num = round_idx // 3
+    step_in_block = round_idx % 3
 
     block_start = block_num * 9
     block_movies = pool_movies[block_start : block_start + 9]
@@ -567,18 +607,14 @@ def get_player_round_movies(session_id, pool_movies, round_idx, player_order, nu
     if not block_movies:
         return []
 
-    # Se o bloco tiver 9 filmes, divide em 3 grupos de 3 e roda consoante o jogador
     if len(block_movies) == 9:
         sub_batches = [block_movies[0:3], block_movies[3:6], block_movies[6:9]]
-        # Desloca o lote consoante o número do jogador para não verem os mesmos 3 ao mesmo tempo
         shifted_idx = (step_in_block + (player_order - 1)) % 3
         chosen_batch = list(sub_batches[shifted_idx])
-        # Baralha também a posição dos 3 cartões de forma determinística para esse jogador
         rng = random.Random(f"{session_id}_{round_idx}_{player_order}")
         rng.shuffle(chosen_batch)
         return chosen_batch
 
-    # Caso restem menos de 9 filmes no final do catálogo
     start = step_in_block * 3
     sub = list(block_movies[start : start + 3])
     rng = random.Random(f"{session_id}_{round_idx}_{player_order}")
@@ -588,70 +624,68 @@ def get_player_round_movies(session_id, pool_movies, round_idx, player_order, nu
 
 @app.route("/session/<int:session_id>/movies")
 def movies_round(session_id):
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("SELECT id_round FROM public.filter_round WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;", (session_id,))
-        round_id = cur.fetchone()[0]
+    lang = session.get("lang", "pt")
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id_round FROM public.filter_round WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;", (session_id,))
+            round_row = cur.fetchone()
+            if not round_row:
+                return redirect(url_for("index"))
+            round_id = round_row[0]
 
-        cur.execute("SELECT id_player, player_order, player_name FROM public.session_player WHERE id_session = %s ORDER BY player_order ASC;", (session_id,))
-        players = cur.fetchall()
-        num_players = len(players)
+            cur.execute("SELECT id_player, player_order, player_name FROM public.session_player WHERE id_session = %s ORDER BY player_order ASC;", (session_id,))
+            players = cur.fetchall()
+            num_players = len(players)
 
-        # Filmes que já têm 'Gosto' (1) de todos os jogadores e zero 'Não Gosto'/'Já Vi' (0, 2)
-        cur.execute("""
-            SELECT id_movie
-            FROM public.movie_choice
-            WHERE id_session = %s AND id_round = %s
-            GROUP BY id_movie
-            HAVING COUNT(DISTINCT CASE WHEN vote_type = 1 THEN id_player END) = %s
-               AND SUM(CASE WHEN vote_type IN (0, 2) THEN 1 ELSE 0 END) = 0;
-        """, (session_id, round_id, num_players))
-        approved_ids = [r[0] for r in cur.fetchall()]
-
-    conn.close()
+            cur.execute("""
+                SELECT id_movie
+                FROM public.movie_choice
+                WHERE id_session = %s AND id_round = %s
+                GROUP BY id_movie
+                HAVING COUNT(DISTINCT CASE WHEN vote_type = 1 THEN id_player END) = %s
+                   AND SUM(CASE WHEN vote_type IN (0, 2) THEN 1 ELSE 0 END) = 0;
+            """, (session_id, round_id, num_players))
+            approved_ids = [r[0] for r in cur.fetchall()]
 
     batch_key = f"batch_idx_{session_id}"
-    batch_idx = session.get(batch_key, 0)  # 0 = Ronda 1, 1 = Ronda 2, 2 = Ronda 3...
+    batch_idx = session.get(batch_key, 0)
 
-    # REGRA: Faz SEMPRE pelo menos 3 rondas de decisão (batch_idx >= 3) antes de terminar!
     if batch_idx >= 3 and len(approved_ids) >= 3:
         return finalize_top3_movies(session_id, round_id, approved_ids[:3])
 
-    all_matching = get_session_movie_pool(session_id, round_id, min_needed=(batch_idx + 3) * 3)
+    all_matching = get_session_movie_pool(
+        session_id, round_id, min_needed=(batch_idx + 3) * 3, lang=lang
+    )
 
-    # Verificar qual jogador ainda não jogou nesta ronda (batch_idx)
-    conn = get_connection()
-    with conn.cursor() as cur:
-        pending_player = None
-        player_movies = []
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            pending_player = None
+            player_movies = []
 
-        for p in players:
-            p_id, p_order, p_name = p
-            candidate_movies = get_player_round_movies(session_id, all_matching, batch_idx, p_order, num_players)
-            if not candidate_movies:
-                continue
+            for p in players:
+                p_id, p_order, p_name = p
+                candidate_movies = get_player_round_movies(session_id, all_matching, batch_idx, p_order, num_players)
+                if not candidate_movies:
+                    continue
 
-            cand_ids = [m[0] for m in candidate_movies]
-            cur.execute("""
-                SELECT COUNT(DISTINCT id_movie) FROM public.movie_choice
-                WHERE id_session = %s AND id_round = %s AND id_player = %s
-                  AND id_movie = ANY(%s);
-            """, (session_id, round_id, p_id, cand_ids))
-            voted_count = cur.fetchone()[0]
+                cand_ids = [m[0] for m in candidate_movies]
+                cur.execute("""
+                    SELECT COUNT(DISTINCT id_movie) FROM public.movie_choice
+                    WHERE id_session = %s AND id_round = %s AND id_player = %s
+                      AND id_movie = ANY(%s);
+                """, (session_id, round_id, p_id, cand_ids))
+                voted_count = cur.fetchone()[0]
 
-            if voted_count < len(cand_ids):
-                pending_player = p
-                player_movies = candidate_movies
-                break
-    conn.close()
+                if voted_count < len(cand_ids):
+                    pending_player = p
+                    player_movies = candidate_movies
+                    break
 
-    # Se não houver mais filmes disponíveis no catálogo
     if not pending_player and not get_player_round_movies(session_id, all_matching, batch_idx, 1, num_players):
         if len(approved_ids) >= 3:
             return finalize_top3_movies(session_id, round_id, approved_ids[:3])
         return finalize_top3_fallback(session_id, round_id, all_matching)
 
-    # Se todos os jogadores já concluíram a sua ronda atual, avança para a próxima ronda!
     if not pending_player:
         session[batch_key] = batch_idx + 1
         session.modified = True
@@ -672,50 +706,49 @@ def movies_vote(session_id):
     id_player = int(request.form.get("id_player"))
     movie_ids = request.form.getlist("movie_ids")
 
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("SELECT id_round FROM public.filter_round WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;", (session_id,))
-        round_id = cur.fetchone()[0]
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id_round FROM public.filter_round WHERE id_session = %s ORDER BY round_number DESC LIMIT 1;", (session_id,))
+            round_id = cur.fetchone()[0]
 
-        for m_id_str in movie_ids:
-            m_id = int(m_id_str)
-            vote_val = int(request.form.get(f"vote_{m_id}", 0))
-            cur.execute("""
-                INSERT INTO public.movie_choice (id_session, id_round, id_player, id_movie, vote_type)
-                VALUES (%s, %s, %s, %s, %s);
-            """, (session_id, round_id, id_player, m_id, vote_val))
+            for m_id_str in movie_ids:
+                m_id = int(m_id_str)
+                vote_val = int(request.form.get(f"vote_{m_id}", 0))
+                cur.execute("""
+                    INSERT INTO public.movie_choice (id_session, id_round, id_player, id_movie, vote_type)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (id_session, id_round, id_player, id_movie) DO UPDATE SET
+                        vote_type = EXCLUDED.vote_type;
+                """, (session_id, round_id, id_player, m_id, vote_val))
+        conn.commit()
 
-    conn.commit()
-    conn.close()
     return redirect(url_for("movies_round", session_id=session_id))
 
 
 def finalize_top3_movies(session_id, round_id, top3_ids):
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM public.final_top3_movie WHERE id_session = %s;", (session_id,))
-        for m_id in top3_ids:
-            cur.execute("INSERT INTO public.final_top3_movie (id_session, id_movie) VALUES (%s, %s);", (session_id, m_id))
-        cur.execute("UPDATE public.game_session SET status = 'TOP3_VOTE' WHERE id_session = %s;", (session_id,))
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM public.final_top3_movie WHERE id_session = %s;", (session_id,))
+            for m_id in top3_ids:
+                cur.execute("INSERT INTO public.final_top3_movie (id_session, id_movie) VALUES (%s, %s);", (session_id, m_id))
+            cur.execute("UPDATE public.game_session SET status = 'TOP3_VOTE' WHERE id_session = %s;", (session_id,))
+        conn.commit()
     return redirect(url_for("top3_voting", session_id=session_id))
 
 
 def finalize_top3_fallback(session_id, round_id, all_matching):
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT id_movie
-            FROM public.movie_choice
-            WHERE id_session = %s AND id_round = %s
-            GROUP BY id_movie
-            ORDER BY SUM(CASE WHEN vote_type = 1 THEN 1 ELSE 0 END) DESC,
-                     SUM(CASE WHEN vote_type = 2 THEN 1 ELSE 0 END) ASC
-            LIMIT 3;
-        """, (session_id, round_id))
-        top_ids = [r[0] for r in cur.fetchall()]
-    conn.close()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id_movie
+                FROM public.movie_choice
+                WHERE id_session = %s AND id_round = %s
+                GROUP BY id_movie
+                ORDER BY SUM(CASE WHEN vote_type = 1 THEN 1 ELSE 0 END) DESC,
+                         SUM(CASE WHEN vote_type = 2 THEN 1 ELSE 0 END) ASC
+                LIMIT 3;
+            """, (session_id, round_id))
+            top_ids = [r[0] for r in cur.fetchall()]
 
     if len(top_ids) < 3:
         for m in all_matching:
@@ -727,45 +760,46 @@ def finalize_top3_fallback(session_id, round_id, all_matching):
     return finalize_top3_movies(session_id, round_id, top_ids[:3])
 
 
-# =========================================================
-# ETAPA 6: VOTAÇÃO NOS 3 FINALISTAS, PEDRA-PAPEL-TESOURA E VENCEDOR
-# =========================================================
 @app.route("/session/<int:session_id>/top3", methods=["GET", "POST"])
 def top3_voting(session_id):
-    conn = get_connection()
-    with conn.cursor() as cur:
-        if request.method == "POST":
-            id_player = int(request.form.get("id_player"))
-            id_movie = int(request.form.get("id_movie"))
+    lang = session.get("lang", "pt")
+    plot_expr = get_plot_column(lang)
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            if request.method == "POST":
+                id_player = int(request.form.get("id_player"))
+                id_movie = int(request.form.get("id_movie"))
+                cur.execute("""
+                    INSERT INTO public.movie_final_choice (id_session, id_player, id_movie)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (id_session, id_player) DO UPDATE SET
+                        id_movie = EXCLUDED.id_movie;
+                """, (session_id, id_player, id_movie))
+                conn.commit()
+
             cur.execute("""
-                INSERT INTO public.movie_final_choice (id_session, id_player, id_movie)
-                VALUES (%s, %s, %s);
-            """, (session_id, id_player, id_movie))
-            conn.commit()
+                SELECT sp.id_player, sp.player_order, sp.player_name
+                FROM public.session_player sp
+                WHERE sp.id_session = %s
+                  AND sp.id_player NOT IN (
+                      SELECT id_player FROM public.movie_final_choice WHERE id_session = %s
+                  )
+                ORDER BY sp.player_order ASC;
+            """, (session_id, session_id))
+            pending_players = cur.fetchall()
 
-        cur.execute("""
-            SELECT sp.id_player, sp.player_order, sp.player_name
-            FROM public.session_player sp
-            WHERE sp.id_session = %s
-              AND sp.id_player NOT IN (
-                  SELECT id_player FROM public.movie_final_choice WHERE id_session = %s
-              )
-            ORDER BY sp.player_order ASC;
-        """, (session_id, session_id))
-        pending_players = cur.fetchall()
+            cur.execute("SELECT COUNT(*) FROM public.session_player WHERE id_session = %s;", (session_id,))
+            total_players = cur.fetchone()[0]
 
-        cur.execute("SELECT COUNT(*) FROM public.session_player WHERE id_session = %s;", (session_id,))
-        total_players = cur.fetchone()[0]
-
-        cur.execute("""
-            SELECT m.id_movie, m.original_title, m.year, m.duration, m.rating, m.genres, m.poster_url, m.plot
-            FROM public.final_top3_movie f
-            JOIN public.movie m ON m.id_movie = f.id_movie
-            WHERE f.id_session = %s;
-        """, (session_id,))
-        finalists = cur.fetchall()
-
-    conn.close()
+            cur.execute(f"""
+                SELECT m.id_movie, m.original_title, m.year, m.duration, m.rating,
+                       m.genres, m.poster_url, {plot_expr} AS plot
+                FROM public.final_top3_movie f
+                JOIN public.movie m ON m.id_movie = f.id_movie
+                WHERE f.id_session = %s;
+            """, (session_id,))
+            finalists = cur.fetchall()
 
     if pending_players:
         return render_template(
@@ -781,36 +815,33 @@ def top3_voting(session_id):
 
 @app.route("/session/<int:session_id>/top3/evaluate")
 def evaluate_top3_votes(session_id):
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT mfc.id_player, sp.player_name, mfc.id_movie
-            FROM public.movie_final_choice mfc
-            JOIN public.session_player sp ON sp.id_player = mfc.id_player
-            WHERE mfc.id_session = %s
-            ORDER BY sp.player_order ASC;
-        """, (session_id,))
-        votes = cur.fetchall()
-
-        chosen_movies = {v[2] for v in votes}
-
-        # Se todos votaram no mesmo filme, vence por unanimidade!
-        if len(chosen_movies) == 1:
-            winning_movie_id = list(chosen_movies)[0]
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
             cur.execute("""
-                UPDATE public.game_session
-                SET status = 'FINISHED', finished_at = CURRENT_TIMESTAMP, winning_movie_id = %s
-                WHERE id_session = %s;
-            """, (winning_movie_id, session_id))
-            conn.commit()
-            conn.close()
-            session[f"win_reason_{session_id}"] = "Escolhido por Unanimidade pelo Grupo"
-            return redirect(url_for("winner_screen", session_id=session_id))
+                SELECT mfc.id_player, sp.player_name, mfc.id_movie
+                FROM public.movie_final_choice mfc
+                JOIN public.session_player sp ON sp.id_player = mfc.id_player
+                WHERE mfc.id_session = %s
+                ORDER BY sp.player_order ASC;
+            """, (session_id,))
+            votes = cur.fetchall()
 
-        # Se houve divergência, prepara o Torneio de Pedra-Papel-Tesoura
-        cur.execute("UPDATE public.game_session SET status = 'TIE_FINAL' WHERE id_session = %s;", (session_id,))
-        conn.commit()
-    conn.close()
+            chosen_movies = {v[2] for v in votes}
+
+            if len(chosen_movies) == 1:
+                winning_movie_id = list(chosen_movies)[0]
+                cur.execute("""
+                    UPDATE public.game_session
+                    SET status = 'FINISHED', finished_at = CURRENT_TIMESTAMP, winning_movie_id = %s
+                    WHERE id_session = %s;
+                """, (winning_movie_id, session_id))
+                conn.commit()
+                session[f"win_type_{session_id}"] = "UNANIMOUS"
+                session.pop(f"win_champ_{session_id}", None)
+                return redirect(url_for("winner_screen", session_id=session_id))
+
+            cur.execute("UPDATE public.game_session SET status = 'TIE_FINAL' WHERE id_session = %s;", (session_id,))
+            conn.commit()
 
     session[f"rps_queue_{session_id}"] = [[v[0], v[1]] for v in votes]
     return redirect(url_for("rps_arena", session_id=session_id))
@@ -820,39 +851,39 @@ def evaluate_top3_votes(session_id):
 def rps_arena(session_id):
     queue_key = f"rps_queue_{session_id}"
     if queue_key not in session:
-        conn = get_connection()
-        with conn.cursor() as cur:
-            cur.execute("SELECT id_player, player_name FROM public.session_player WHERE id_session = %s ORDER BY player_order ASC;", (session_id,))
-            players = cur.fetchall()
-        conn.close()
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id_player, player_name FROM public.session_player WHERE id_session = %s ORDER BY player_order ASC;", (session_id,))
+                players = cur.fetchall()
         session[queue_key] = [[p[0], p[1]] for p in players]
 
     queue = session[queue_key]
 
-    # Quando resta apenas 1 jogador, ele é o Campeão do Pedra-Papel-Tesoura!
     if len(queue) == 1:
         champion_id, champion_name = queue[0]
-        conn = get_connection()
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id_movie FROM public.movie_final_choice
-                WHERE id_session = %s AND id_player = %s LIMIT 1;
-            """, (session_id, champion_id))
-            winning_movie_id = cur.fetchone()[0]
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id_movie FROM public.movie_final_choice
+                    WHERE id_session = %s AND id_player = %s LIMIT 1;
+                """, (session_id, champion_id))
+                winning_movie_id = cur.fetchone()[0]
 
-            cur.execute("""
-                UPDATE public.game_session
-                SET status = 'FINISHED', finished_at = CURRENT_TIMESTAMP, winning_movie_id = %s
-                WHERE id_session = %s;
-            """, (winning_movie_id, session_id))
-        conn.commit()
-        conn.close()
+                cur.execute("""
+                    UPDATE public.game_session
+                    SET status = 'FINISHED', finished_at = CURRENT_TIMESTAMP, winning_movie_id = %s
+                    WHERE id_session = %s;
+                """, (winning_movie_id, session_id))
+            conn.commit()
 
-        session[f"win_reason_{session_id}"] = f"Definido por {champion_name} no Torneio de Pedra-Papel-Tesoura"
+        session[f"win_type_{session_id}"] = "RPS"
+        session[f"win_champ_{session_id}"] = champion_name
         return redirect(url_for("winner_screen", session_id=session_id))
 
+    lang = session.get("lang", "pt")
+    t = TRANSLATIONS.get(lang, TRANSLATIONS["pt"])
     p1, p2 = queue[0], queue[1]
-    match_title = "Grande Final" if len(queue) == 2 else f"Meia-Final ({len(queue)} Jogadores)"
+    match_title = t["ttt_final"] if len(queue) == 2 else f"{t['ttt_elim']} ({len(queue)} {t['player_label']}s)"
     return render_template("rps_arena.html", session_id=session_id, p1=p1, p2=p2, match_title=match_title)
 
 
@@ -862,16 +893,15 @@ def rps_record(session_id):
     p2_id = int(request.form.get("p2_id"))
     winner_id = int(request.form.get("winner_id"))
 
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("""
-            INSERT INTO public.tiebreaker_match (
-                id_session, game_type, stage,
-                player1_id, player2_id, winner_player_id
-            ) VALUES (%s, 'ROCK_PAPER_SCISSORS', 'FINAL_MOVIE_CONFLICT', %s, %s, %s);
-        """, (session_id, p1_id, p2_id, winner_id))
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO public.tiebreaker_match (
+                    id_session, game_type, stage,
+                    player1_id, player2_id, winner_player_id
+                ) VALUES (%s, 'ROCK_PAPER_SCISSORS', 'FINAL_MOVIE_CONFLICT', %s, %s, %s);
+            """, (session_id, p1_id, p2_id, winner_id))
+        conn.commit()
 
     queue_key = f"rps_queue_{session_id}"
     queue = session.get(queue_key, [])
@@ -886,58 +916,47 @@ def rps_record(session_id):
 
 @app.route("/session/<int:session_id>/winner")
 def winner_screen(session_id):
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("SELECT winning_movie_id FROM public.game_session WHERE id_session = %s;", (session_id,))
-        row = cur.fetchone()
-        if not row or not row[0]:
-            conn.close()
-            return redirect(url_for("index"))
-        winning_movie_id = row[0]
+    lang = session.get("lang", "pt")
+    t = TRANSLATIONS.get(lang, TRANSLATIONS["pt"])
+    plot_expr = get_plot_column(lang)
 
-        cur.execute("""
-            SELECT id_movie, current_rank, original_title, year, certificate,
-                   duration, rating, vote_count, metascore, directors,
-                   writers, stars, genres, languages, countries, link, poster_url, plot
-            FROM public.movie
-            WHERE id_movie = %s;
-        """, (winning_movie_id,))
-        movie = cur.fetchone()
-    conn.close()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT winning_movie_id FROM public.game_session WHERE id_session = %s;", (session_id,))
+            row = cur.fetchone()
+            if not row or not row[0]:
+                return redirect(url_for("index"))
+            winning_movie_id = row[0]
 
-    reason_text = session.get(f"win_reason_{session_id}", "Filme Vencedor da Partida")
-    return render_template("winner_movie.html", movie=movie, reason_text=reason_text)
+            cur.execute(f"""
+                SELECT m.id_movie, m.current_rank, m.original_title, m.year, m.certificate,
+                       m.duration, m.rating, m.vote_count, m.metascore, m.directors,
+                       m.writers, m.stars, m.genres, m.languages, m.countries, m.link,
+                       m.poster_url, {plot_expr} AS translated_plot
+                FROM public.movie m
+                WHERE m.id_movie = %s;
+            """, (winning_movie_id,))
+            movie = cur.fetchone()
+
+    win_type = session.get(f"win_type_{session_id}", "UNANIMOUS")
+    if win_type == "RPS":
+        champ = session.get(f"win_champ_{session_id}", "")
+        reason_text = f"{t['win_by_rps']} {champ}".strip()
+    else:
+        reason_text = t["win_unanimous"]
+
+    movie_plot = movie[17] if movie and len(movie) > 17 else ""
+    return render_template(
+        "winner_movie.html",
+        movie=movie,
+        movie_plot=movie_plot,
+        reason_text=reason_text,
+    )
 
 
 # =========================================================
 # ETAPA 7: DASHBOARD DE ADMIN (/admin)
 # =========================================================
-def counter_to_bars(counter_obj, limit=8):
-    items = counter_obj.most_common(limit)
-    if not items:
-        return []
-    max_val = max(c for _, c in items) or 1
-    return [(k, c, int((c / max_val) * 100)) for k, c in items]
-
-@app.route("/admin/login", methods=["GET", "POST"])
-def admin_login():
-    error = None
-    if request.method == "POST":
-        entered_pw = request.form.get("password", "")
-        expected_pw = os.getenv("ADMIN_PASSWORD", "admin123").strip()
-        if entered_pw == expected_pw:
-            session["is_admin_authenticated"] = True
-            return redirect(url_for("admin_dashboard"))
-        error = "Password incorreta!"
-    return render_template("admin_login.html", error=error)
-
-
-@app.route("/admin/logout")
-def admin_logout():
-    session.pop("is_admin_authenticated", None)
-    return redirect(url_for("index"))
-
-
 def counter_to_bars(counter_obj, limit=12):
     items = counter_obj.most_common(limit)
     if not items:
@@ -946,170 +965,213 @@ def counter_to_bars(counter_obj, limit=12):
     return [(k, c, int((c / max_val) * 100)) for k, c in items]
 
 
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    error = None
+    client_ip = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
+    now = time.time()
+
+    attempts = [ts for ts in _ADMIN_FAILED_ATTEMPTS.get(client_ip, []) if now - ts < LOCKOUT_SECONDS]
+    _ADMIN_FAILED_ATTEMPTS[client_ip] = attempts
+
+    if len(attempts) >= MAX_LOGIN_ATTEMPTS:
+        wait_sec = int(LOCKOUT_SECONDS - (now - attempts[0]))
+        return render_template(
+            "admin_login.html",
+            error=f"Demasiadas tentativas falhadas. Aguarda {wait_sec}s antes de tentar novamente.",
+        )
+
+    if request.method == "POST":
+        entered_pw = request.form.get("password", "")
+        expected_pw = os.getenv("ADMIN_PASSWORD", "admin123").strip()
+        if hmac.compare_digest(entered_pw, expected_pw):
+            _ADMIN_FAILED_ATTEMPTS.pop(client_ip, None)
+            session["is_admin_authenticated"] = True
+            return redirect(url_for("admin_dashboard"))
+
+        attempts.append(now)
+        _ADMIN_FAILED_ATTEMPTS[client_ip] = attempts
+        error = "Password incorreta!"
+
+    return render_template("admin_login.html", error=error)
+
+
+@app.route("/admin/logout")
+def admin_logout():
+    session.pop("is_admin_authenticated", None)
+    return redirect(url_for("admin_login"))
+
+
 @app.route("/admin")
 def admin_dashboard():
     if not session.get("is_admin_authenticated"):
         return redirect(url_for("admin_login"))
 
-    conn = get_connection()
-    with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM public.game_session;")
-        total_sessions = cur.fetchone()[0]
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM public.game_session;")
+            total_sessions = cur.fetchone()[0]
 
-        cur.execute("SELECT COUNT(*) FROM public.game_session WHERE status = 'FINISHED';")
-        finished_sessions = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM public.game_session WHERE status = 'FINISHED';")
+            finished_sessions = cur.fetchone()[0]
 
-        # Count de jogos de 2, 3 e 4 pessoas
-        cur.execute("SELECT num_players, COUNT(*) FROM public.game_session GROUP BY num_players;")
-        by_p = dict(cur.fetchall())
-        sessions_2p = by_p.get(2, 0)
-        sessions_3p = by_p.get(3, 0)
-        sessions_4p = by_p.get(4, 0)
+            completion_rate = int(round((finished_sessions / total_sessions) * 100)) if total_sessions > 0 else 0
 
-        cur.execute("SELECT COUNT(*) FROM public.movie_choice;")
-        total_movie_votes = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM public.session_player;")
+            total_players = cur.fetchone()[0]
 
-        cur.execute("SELECT COUNT(*) FROM public.tiebreaker_match WHERE game_type = 'TIC_TAC_TOE';")
-        ttt_matches = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM public.filter_round;")
+            total_rounds = cur.fetchone()[0]
 
-        cur.execute("SELECT COUNT(*) FROM public.tiebreaker_match WHERE game_type = 'ROCK_PAPER_SCISSORS';")
-        rps_matches = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM public.filter_round WHERE had_conflict = TRUE;")
+            conflict_rounds = cur.fetchone()[0]
 
-        # Ler todas as escolhas de filtros (Geral + Quando há disputa)
-        cur.execute("""
-            SELECT year_choice, duration_choice, certificate_choice,
-                   rating_choice, genres_choice, combat_category
-            FROM public.filter_choice;
-        """)
+            conflict_rate = int(round((conflict_rounds / total_rounds) * 100)) if total_rounds > 0 else 0
 
-        gen_decades = Counter()
-        gen_durations = Counter()
-        gen_certs = Counter()
-        gen_ratings = Counter()
-        gen_genres = Counter()
+            cur.execute("SELECT num_players, COUNT(*) FROM public.game_session GROUP BY num_players;")
+            by_p = dict(cur.fetchall())
+            sessions_2p = by_p.get(2, 0)
+            sessions_3p = by_p.get(3, 0)
+            sessions_4p = by_p.get(4, 0)
 
-        # Garantir que os 5 filtros aparecem sempre no gráfico de Filtros Disputados
-        combat_cats_count = {
-            "genres": 0,
-            "decades": 0,
-            "duration": 0,
-            "certificate": 0,
-            "rating": 0,
-        }
-        combat_spec = {
-            "genres": Counter(),
-            "decades": Counter(),
-            "duration": Counter(),
-            "certificate": Counter(),
-            "rating": Counter(),
-        }
+            cur.execute("SELECT COUNT(*) FROM public.movie_choice;")
+            total_movie_votes = cur.fetchone()[0]
 
-        for yr_c, dur_c, cert_c, rat_c, gen_c, comb_c in cur.fetchall():
-            # 1. Décadas (Geral)
-            dec_vals = [d.strip() for d in (yr_c or "ANY").split(",") if d.strip()]
-            for d in dec_vals:
-                gen_decades["Todas (Sem filtro)" if d == "ANY" else d] += 1
+            cur.execute("SELECT COUNT(*) FROM public.tiebreaker_match WHERE game_type = 'TIC_TAC_TOE';")
+            ttt_matches = cur.fetchone()[0]
 
-            # 2. Duração (Geral)
-            dur_vals = [d.strip() for d in (dur_c or "ANY").split(",") if d.strip()]
-            for d in dur_vals:
-                gen_durations["Todas (Sem filtro)" if d == "ANY" else d] += 1
+            cur.execute("SELECT COUNT(*) FROM public.tiebreaker_match WHERE game_type = 'ROCK_PAPER_SCISSORS';")
+            rps_matches = cur.fetchone()[0]
 
-            # 3. Restrição de Idade (Geral)
-            cert_val = "Qualquer Idade" if (not cert_c or cert_c == "ANY") else cert_c.strip()
-            gen_certs[cert_val] += 1
+            cur.execute("""
+                SELECT year_choice, duration_choice, certificate_choice,
+                       rating_choice, genres_choice, combat_category
+                FROM public.filter_choice;
+            """)
 
-            # 4. Rating (Geral)
-            rat_val = str(rat_c) if rat_c is not None else "8.0"
-            gen_ratings[rat_val] += 1
+            gen_decades = Counter()
+            gen_durations = Counter()
+            gen_certs = Counter()
+            gen_ratings = Counter()
+            gen_genres = Counter()
 
-            # 5. Género (Geral)
-            gen_vals = [g.strip() for g in (gen_c or "ANY").split(",") if g.strip()]
-            for g in gen_vals:
-                gen_genres["Todos (Sem filtro)" if g == "ANY" else g] += 1
+            combat_cats_count = {
+                "genres": 0,
+                "decades": 0,
+                "duration": 0,
+                "certificate": 0,
+                "rating": 0,
+            }
+            combat_spec = {
+                "genres": Counter(),
+                "decades": Counter(),
+                "duration": Counter(),
+                "certificate": Counter(),
+                "rating": Counter(),
+            }
 
-            # Se houve disputa escolhida no Jogo do Galo para esta linha:
-            if comb_c in combat_cats_count:
-                combat_cats_count[comb_c] += 1
-                if comb_c == "genres":
-                    for g in gen_vals:
-                        combat_spec["genres"]["Todos" if g == "ANY" else g] += 1
-                elif comb_c == "decades":
-                    for d in dec_vals:
-                        combat_spec["decades"]["Todas" if d == "ANY" else d] += 1
-                elif comb_c == "duration":
-                    for d in dur_vals:
-                        combat_spec["duration"]["Todas" if d == "ANY" else d] += 1
-                elif comb_c == "certificate":
-                    combat_spec["certificate"][cert_val] += 1
-                elif comb_c == "rating":
-                    combat_spec["rating"][rat_val] += 1
+            dur_normalizer = {"=2h": "1h30-2h", "=2h30": "2h-2h30"}
 
-        cat_labels = [
-            ("genres", "🎭 Género"),
-            ("decades", "📅 Ano (Décadas)"),
-            ("duration", "⏱️ Duração"),
-            ("certificate", "🔞 Restrição de Idade"),
-            ("rating", "⭐ Pontuação IMDb"),
-        ]
-        max_comb = max(combat_cats_count.values()) or 1
-        combat_overview = [
-            (label, combat_cats_count[key], int((combat_cats_count[key] / max_comb) * 100))
-            for key, label in cat_labels
-        ]
-        combat_overview.sort(key=lambda x: x[1], reverse=True)
+            for yr_c, dur_c, cert_c, rat_c, gen_c, comb_c in cur.fetchall():
+                dec_vals = [d.strip() for d in (yr_c or "ANY").split(",") if d.strip()]
+                for d in dec_vals:
+                    gen_decades["Todas (Sem filtro)" if d == "ANY" else d] += 1
 
-        # Estatísticas de Filmes
-        cur.execute("""
-            SELECT m.original_title, COUNT(*) AS cnt
-            FROM public.game_session gs
-            JOIN public.movie m ON m.id_movie = gs.winning_movie_id
-            GROUP BY m.original_title ORDER BY cnt DESC LIMIT 6;
-        """)
-        winning_movies = cur.fetchall()
+                dur_vals = [dur_normalizer.get(d.strip(), d.strip()) for d in (dur_c or "ANY").split(",") if d.strip()]
+                for d in dur_vals:
+                    gen_durations["Todas (Sem filtro)" if d == "ANY" else d] += 1
 
-        cur.execute("""
-            SELECT m.original_title, COUNT(*) AS cnt
-            FROM public.movie_choice mc JOIN public.movie m ON m.id_movie = mc.id_movie
-            WHERE mc.vote_type = 1 GROUP BY m.original_title ORDER BY cnt DESC LIMIT 6;
-        """)
-        most_liked = cur.fetchall()
+                cert_val = "Qualquer Idade" if (not cert_c or cert_c == "ANY") else cert_c.strip()
+                gen_certs[cert_val] += 1
 
-        cur.execute("""
-            SELECT m.original_title, COUNT(*) AS cnt
-            FROM public.movie_choice mc JOIN public.movie m ON m.id_movie = mc.id_movie
-            WHERE mc.vote_type = 2 GROUP BY m.original_title ORDER BY cnt DESC LIMIT 6;
-        """)
-        most_seen = cur.fetchall()
+                rat_val = str(rat_c) if rat_c is not None else "8.0"
+                gen_ratings[rat_val] += 1
 
-        cur.execute("""
-            SELECT m.original_title, COUNT(*) AS cnt
-            FROM public.movie_choice mc JOIN public.movie m ON m.id_movie = mc.id_movie
-            WHERE mc.vote_type = 0 GROUP BY m.original_title ORDER BY cnt DESC LIMIT 6;
-        """)
-        most_disliked = cur.fetchall()
+                gen_vals = [g.strip() for g in (gen_c or "ANY").split(",") if g.strip()]
+                for g in gen_vals:
+                    gen_genres["Todos (Sem filtro)" if g == "ANY" else translate_genres_str(g, "pt")] += 1
 
-        cur.execute("""
-            SELECT gs.id_session, gs.created_at,
-                   STRING_AGG(sp.player_name, ', ' ORDER BY sp.player_order),
-                   gs.num_players, gs.status, m.original_title
-            FROM public.game_session gs
-            LEFT JOIN public.session_player sp ON sp.id_session = gs.id_session
-            LEFT JOIN public.movie m ON m.id_movie = gs.winning_movie_id
-            GROUP BY gs.id_session, gs.created_at, gs.num_players, gs.status, m.original_title
-            ORDER BY gs.id_session DESC LIMIT 10;
-        """)
-        recent_sessions = cur.fetchall()
+                if comb_c in combat_cats_count:
+                    combat_cats_count[comb_c] += 1
+                    if comb_c == "genres":
+                        for g in gen_vals:
+                            combat_spec["genres"]["Todos" if g == "ANY" else translate_genres_str(g, "pt")] += 1
+                    elif comb_c == "decades":
+                        for d in dec_vals:
+                            combat_spec["decades"]["Todas" if d == "ANY" else d] += 1
+                    elif comb_c == "duration":
+                        for d in dur_vals:
+                            combat_spec["duration"]["Todas" if d == "ANY" else d] += 1
+                    elif comb_c == "certificate":
+                        combat_spec["certificate"][cert_val] += 1
+                    elif comb_c == "rating":
+                        combat_spec["rating"][rat_val] += 1
 
-    conn.close()
+            cat_labels = [
+                ("genres", "🎭 Género"),
+                ("decades", "📅 Ano (Décadas)"),
+                ("duration", "⏱️ Duração"),
+                ("certificate", "🔞 Restrição de Idade"),
+                ("rating", "⭐ Pontuação IMDb"),
+            ]
+            max_comb = max(combat_cats_count.values()) or 1
+            combat_overview = [
+                (label, combat_cats_count[key], int((combat_cats_count[key] / max_comb) * 100))
+                for key, label in cat_labels
+            ]
+            combat_overview.sort(key=lambda x: x[1], reverse=True)
+
+            cur.execute("""
+                SELECT m.original_title, COUNT(*) AS cnt
+                FROM public.game_session gs
+                JOIN public.movie m ON m.id_movie = gs.winning_movie_id
+                GROUP BY m.original_title ORDER BY cnt DESC LIMIT 6;
+            """)
+            winning_movies = cur.fetchall()
+
+            cur.execute("""
+                SELECT m.original_title, COUNT(*) AS cnt
+                FROM public.movie_choice mc JOIN public.movie m ON m.id_movie = mc.id_movie
+                WHERE mc.vote_type = 1 GROUP BY m.original_title ORDER BY cnt DESC LIMIT 6;
+            """)
+            most_liked = cur.fetchall()
+
+            cur.execute("""
+                SELECT m.original_title, COUNT(*) AS cnt
+                FROM public.movie_choice mc JOIN public.movie m ON m.id_movie = mc.id_movie
+                WHERE mc.vote_type = 2 GROUP BY m.original_title ORDER BY cnt DESC LIMIT 6;
+            """)
+            most_seen = cur.fetchall()
+
+            cur.execute("""
+                SELECT m.original_title, COUNT(*) AS cnt
+                FROM public.movie_choice mc JOIN public.movie m ON m.id_movie = mc.id_movie
+                WHERE mc.vote_type = 0 GROUP BY m.original_title ORDER BY cnt DESC LIMIT 6;
+            """)
+            most_disliked = cur.fetchall()
+
+            cur.execute("""
+                SELECT gs.id_session, gs.created_at,
+                       STRING_AGG(sp.player_name, ', ' ORDER BY sp.player_order),
+                       gs.num_players, gs.status, m.original_title
+                FROM public.game_session gs
+                LEFT JOIN public.session_player sp ON sp.id_session = gs.id_session
+                LEFT JOIN public.movie m ON m.id_movie = gs.winning_movie_id
+                GROUP BY gs.id_session, gs.created_at, gs.num_players, gs.status, m.original_title
+                ORDER BY gs.id_session DESC LIMIT 10;
+            """)
+            recent_sessions = cur.fetchall()
 
     kpis = {
         "total_sessions": total_sessions,
         "finished_sessions": finished_sessions,
+        "completion_rate": completion_rate,
+        "total_players": total_players,
+        "total_movie_votes": total_movie_votes,
+        "conflict_rate": conflict_rate,
         "sessions_2p": sessions_2p,
         "sessions_3p": sessions_3p,
         "sessions_4p": sessions_4p,
-        "total_movie_votes": total_movie_votes,
         "ttt_matches": ttt_matches,
         "rps_matches": rps_matches,
     }
@@ -1145,4 +1207,5 @@ def admin_dashboard():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    is_debug = os.getenv("FLASK_DEBUG", "1") == "1"
+    app.run(debug=is_debug, port=int(os.getenv("PORT", "5000")))
