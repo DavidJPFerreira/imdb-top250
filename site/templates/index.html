@@ -2,53 +2,195 @@
 <html lang="{{ lang }}">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ t.setup_title }}</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23E6392E'%3E%3Cpath d='M2.00488 9.49979V3.99979C2.00488 3.4475 2.4526 2.99979 3.00488 2.99979H21.0049C21.5572 2.99979 22.0049 3.4475 22.0049 3.99979V9.49979C20.6242 9.49979 19.5049 10.6191 19.5049 11.9998C19.5049 13.3805 20.6242 14.4998 22.0049 14.4998V19.9998C22.0049 20.5521 21.5572 20.9998 21.0049 20.9998H3.00488C2.4526 20.9998 2.00488 20.5521 2.00488 19.9998V14.4998C3.38559 14.4998 4.50488 13.3805 4.50488 11.9998C4.50488 10.6191 3.38559 9.49979 2.00488 9.49979ZM14.0049 4.99979H4.00488V7.96755C5.4866 8.7039 6.50488 10.2329 6.50488 11.9998C6.50488 13.7666 5.4866 15.2957 4.00488 16.032V18.9998H14.0049V4.99979ZM16.0049 4.99979V18.9998H20.0049V16.032C18.5232 15.2957 17.5049 13.7666 17.5049 11.9998C17.5049 10.2329 18.5232 8.7039 20.0049 7.96755V4.99979H16.0049Z'/%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Grotesk:wght@400;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --bg-paper: #F4EEDD;
+            --bg-paper-alt: #EFECE6;
+            --red: #E6392E;
+            --yellow: #F4B41A;
+            --blue: #1B4965;
+            --black: #181818;
+        }
         * { box-sizing: border-box; }
         body {
-            background-color: #121212; color: #ffffff;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0; padding: 25px 20px; text-align: center;
+            background-color: var(--bg-paper);
+            background-image: 
+                linear-gradient(to right, rgba(24,24,24,0.05) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(24,24,24,0.05) 1px, transparent 1px);
+            background-size: 40px 40px;
+            color: var(--black);
+            font-family: 'Space Grotesk', sans-serif;
+            margin: 0; padding: 28px 20px 60px 20px; text-align: center;
         }
         .top-bar {
-            max-width: 520px; margin: 0 auto 20px auto;
+            max-width: 620px; margin: 0 auto 22px auto;
             display: flex; justify-content: space-between; align-items: center;
         }
         .lang-group { display: flex; gap: 8px; }
         .lang-btn {
-            background: #1e1e1e; color: #ccc; border: 1px solid #444;
-            padding: 6px 10px; border-radius: 6px; text-decoration: none;
-            font-size: 0.85rem; font-weight: bold;
+            background: var(--bg-paper-alt); color: var(--black); border: 3px solid var(--black);
+            box-shadow: 3px 3px 0px var(--black); padding: 5px 12px;
+            text-decoration: none; font-family: 'Space Mono', monospace; font-size: 0.82rem; font-weight: 700;
+            transition: transform 0.15s;
         }
-        .lang-btn.active { background: #f5c518; color: #000; border-color: #f5c518; }
-        .back-link { color: #aaa; text-decoration: none; font-size: 0.9rem; }
-        h1 { color: #f5c518; font-size: 2rem; margin-bottom: 8px; }
-        p.subtitle { color: #b3b3b3; margin-top: 0; margin-bottom: 25px; }
+        .lang-btn:hover { transform: translate(-2px, -2px) rotate(-2deg); }
+        .lang-btn.active { background: var(--yellow); color: var(--black); transform: rotate(-2deg); }
+        .back-link {
+            color: var(--black); background: var(--bg-paper-alt); border: 3px solid var(--black);
+            box-shadow: 3px 3px 0px var(--black); padding: 6px 14px;
+            text-decoration: none; font-family: 'Space Mono', monospace; font-weight: 700; font-size: 0.82rem; transition: transform 0.15s;
+        }
+        .back-link:hover { transform: translate(2px, 2px) rotate(-2deg); }
+
+        h1 {
+            font-family: 'Bebas Neue', sans-serif; color: var(--black);
+            font-size: 3.4rem; letter-spacing: 2px; margin: 0 0 6px 0;
+            text-shadow: 3px 3px 0px var(--red);
+        }
+        p.subtitle {
+            color: var(--black); font-weight: 600; margin-top: 0; margin-bottom: 25px;
+            font-family: 'Space Mono', monospace; font-size: 0.88rem;
+        }
+
         .setup-box {
-            background-color: #1e1e1e; max-width: 520px; margin: 0 auto;
-            padding: 30px; border-radius: 14px; border: 1px solid #2e2e2e;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.7);
+            background-color: var(--bg-paper-alt); max-width: 620px; margin: 0 auto;
+            padding: 0; border: 5px solid var(--black);
+            box-shadow: 10px 10px 0px var(--black);
+            transform: rotate(-0.5deg);
         }
-        .count-selector { display: flex; justify-content: center; gap: 12px; margin-bottom: 25px; }
+        .marquee-header {
+            background: var(--black); color: var(--bg-paper);
+            padding: 12px 18px; border-bottom: 4px solid var(--black);
+            font-family: 'Space Mono', monospace; font-size: 0.78rem; letter-spacing: 2px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .marquee-lights {
+            display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+            background: var(--red); box-shadow: 18px 0 0 var(--yellow), 36px 0 0 var(--blue);
+            margin-right: 40px;
+        }
+        .setup-inner { padding: 30px; }
+
+        .count-selector {
+            display: flex; justify-content: center; gap: 14px; margin-bottom: 28px;
+            background: var(--black); padding: 12px; border: 3px solid var(--black);
+        }
         .count-btn {
-            background-color: #2c2c2c; color: #fff; border: 2px solid #444;
-            padding: 12px 20px; font-size: 1rem; font-weight: bold;
-            border-radius: 8px; cursor: pointer;
+            flex: 1; background-color: var(--bg-paper); color: var(--black);
+            border: 3px solid var(--black); padding: 12px 16px;
+            font-family: 'Bebas Neue', sans-serif; font-size: 1.4rem; letter-spacing: 1px;
+            cursor: pointer; transition: transform 0.1s;
         }
-        .count-btn.active { background-color: #f5c518; color: #000; border-color: #f5c518; }
-        .player-inputs { display: flex; flex-direction: column; gap: 12px; margin-bottom: 25px; }
-        .player-row { display: flex; align-items: center; gap: 12px; }
+        .count-btn.active {
+            background-color: var(--yellow); color: var(--black);
+            transform: translate(-2px, -2px);
+            box-shadow: 4px 4px 0px var(--red);
+        }
+
+        .player-inputs { display: flex; flex-direction: column; gap: 16px; margin-bottom: 30px; }
+        .player-row {
+            display: flex; align-items: center; gap: 14px;
+            background: var(--bg-paper); border: 3px solid var(--black);
+            padding: 10px 16px; box-shadow: 5px 5px 0px var(--black);
+        }
+        .player-row:nth-child(odd) { transform: rotate(-0.8deg); }
+        .player-row:nth-child(even) { transform: rotate(0.8deg); }
+
+        /* Avatares Geométricos: 1 Círculo, 2 Triângulo, 3 Quadrado, 4 Hexágono */
+        .bauhaus-avatar {
+            width: 38px; height: 38px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+        }
+        .shape-p1 {
+            width: 32px; height: 32px; background: var(--red); border: 3px solid var(--black);
+            border-radius: 50%;
+        }
+        .shape-p2 {
+            width: 34px; height: 32px; background: var(--yellow);
+            clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+            filter: drop-shadow(2px 2px 0px var(--black));
+        }
+        .shape-p3 {
+            width: 30px; height: 30px; background: var(--blue); border: 3px solid var(--black);
+        }
+        .shape-p4 {
+            width: 34px; height: 34px; background: var(--black);
+            clip-path: polygon(25% 5%, 75% 5%, 100% 50%, 75% 95%, 25% 95%, 0% 50%);
+        }
+
         .player-badge {
-            background-color: #333; color: #f5c518; font-weight: bold;
-            padding: 10px 14px; border-radius: 8px; min-width: 115px;
+            font-family: 'Bebas Neue', sans-serif; color: var(--black);
+            font-size: 1.35rem; letter-spacing: 1px; min-width: 100px; text-align: left;
         }
         input[type="text"] {
-            flex: 1; padding: 12px 14px; border-radius: 8px;
-            border: 1px solid #444; background-color: #141414; color: #fff; font-size: 1rem;
+            flex: 1; padding: 12px 14px;
+            border: 3px solid var(--black); background-color: #fff; color: var(--black);
+            font-family: 'Space Mono', monospace; font-size: 0.95rem; font-weight: 700;
         }
-        .start-btn {
-            width: 100%; background-color: #f5c518; color: #000; font-weight: bold;
-            font-size: 1.15rem; padding: 14px; border: none; border-radius: 8px; cursor: pointer;
+        input[type="text"]:focus { outline: none; background-color: #fff9db; border-color: var(--red); }
+
+        /* Botão-Bilhete com Rasgão até Metade (Igual ao ttt_winner.html) */
+        .ticket-tear-btn {
+            display: inline-flex; align-items: stretch;
+            background: transparent; border: none; padding: 0;
+            text-decoration: none; cursor: pointer;
+            perspective: 1000px; filter: drop-shadow(6px 6px 0px var(--black));
+            transition: filter 0.2s ease, transform 0.2s ease;
+        }
+        .ticket-tear-btn .t-main {
+            background:
+                radial-gradient(circle at right top, transparent 10px, var(--red) 10.5px),
+                radial-gradient(circle at right bottom, transparent 10px, var(--red) 10.5px);
+            background-size: 100% 51%;
+            background-position: top, bottom;
+            background-repeat: no-repeat;
+            color: var(--black);
+            padding: 16px 28px;
+            border: 3px solid var(--black); border-right: none;
+            display: flex; align-items: center; justify-content: center;
+            font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 2px;
+            text-transform: uppercase;
+            transition: transform 0.35s cubic-bezier(0.23, 1, 0.32, 1);
+            transform-origin: left center;
+        }
+        .ticket-tear-btn .t-perf {
+            width: 0; border-left: 3px dashed var(--black);
+            background: var(--bg-paper); margin: 10px 0; z-index: 2;
+            transition: opacity 0.25s ease;
+        }
+        .ticket-tear-btn .t-stub {
+            background:
+                radial-gradient(circle at left top, transparent 10px, var(--red) 10.5px),
+                radial-gradient(circle at left bottom, transparent 10px, var(--red) 10.5px);
+            background-size: 100% 51%;
+            background-position: top, bottom;
+            background-repeat: no-repeat;
+            color: var(--black);
+            padding: 12px 20px;
+            border: 3px solid var(--black); border-left: none;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            font-family: 'Space Mono', monospace; font-size: 0.68rem; font-weight: 700;
+            line-height: 1.2;
+            transform-origin: top left;
+            transition: transform 0.45s cubic-bezier(0.23, 1, 0.32, 1);
+        }
+        .ticket-tear-btn .t-barcode {
+            width: 54px; height: 16px; margin-bottom: 4px;
+            background: repeating-linear-gradient(90deg, #181818 0, #181818 2px, transparent 2px, transparent 4px, #181818 4px, #181818 7px, transparent 7px, transparent 9px);
+        }
+        .ticket-tear-btn:hover .t-main {
+            transform: rotate(-1.5deg) translateX(-3px);
+        }
+        .ticket-tear-btn:hover .t-stub {
+            transform: translateY(10px) translateX(5px) rotateZ(8deg);
+        }
+        .ticket-tear-btn:active .t-stub {
+            transform: translateY(22px) translateX(12px) rotateZ(16deg);
         }
     </style>
 </head>
@@ -56,9 +198,9 @@
     <div class="top-bar">
         <a href="/" class="back-link">{{ t.back_home }}</a>
         <div class="lang-group">
-            <a href="/set_lang/pt" class="lang-btn {% if lang == 'pt' %}active{% endif %}">🇵🇹 PT</a>
-            <a href="/set_lang/en" class="lang-btn {% if lang == 'en' %}active{% endif %}">🇬🇧 EN</a>
-            <a href="/set_lang/es" class="lang-btn {% if lang == 'es' %}active{% endif %}">🇪🇸 ES</a>
+            <a href="/set_lang/pt" class="lang-btn {% if lang == 'pt' %}active{% endif %}">PT</a>
+            <a href="/set_lang/en" class="lang-btn {% if lang == 'en' %}active{% endif %}">EN</a>
+            <a href="/set_lang/es" class="lang-btn {% if lang == 'es' %}active{% endif %}">ES</a>
         </div>
     </div>
 
@@ -66,33 +208,51 @@
     <p class="subtitle">{{ t.setup_subtitle }}</p>
 
     <div class="setup-box">
-        <form action="/start_game" method="POST">
-            <input type="hidden" name="num_players" id="num_players" value="2">
-            <div class="count-selector">
-                <button type="button" class="count-btn active" onclick="setPlayers(2)">{{ t.players_2 }}</button>
-                <button type="button" class="count-btn" onclick="setPlayers(3)">{{ t.players_3 }}</button>
-                <button type="button" class="count-btn" onclick="setPlayers(4)">{{ t.players_4 }}</button>
-            </div>
-            <div class="player-inputs">
-                <div class="player-row" id="row-1">
-                    <span class="player-badge">{{ t.player_label }} 1</span>
-                    <input type="text" name="player_1" placeholder="{{ t.player_placeholder }} 1" required>
+        <div class="marquee-header">
+            <span class="marquee-lights"></span>
+            <span>SELECT CAST (2 TO 4 PLAYERS)</span>
+            <span>ROW A</span>
+        </div>
+        <div class="setup-inner">
+            <form action="/start_game" method="POST">
+                <input type="hidden" name="num_players" id="num_players" value="2">
+                <div class="count-selector">
+                    <button type="button" class="count-btn active" onclick="setPlayers(2)">{{ t.players_2 }}</button>
+                    <button type="button" class="count-btn" onclick="setPlayers(3)">{{ t.players_3 }}</button>
+                    <button type="button" class="count-btn" onclick="setPlayers(4)">{{ t.players_4 }}</button>
                 </div>
-                <div class="player-row" id="row-2">
-                    <span class="player-badge">{{ t.player_label }} 2</span>
-                    <input type="text" name="player_2" placeholder="{{ t.player_placeholder }} 2" required>
+                <div class="player-inputs">
+                    <div class="player-row" id="row-1">
+                        <div class="bauhaus-avatar"><div class="shape-p1"></div></div>
+                        <span class="player-badge">{{ t.player_label }} 1</span>
+                        <input type="text" name="player_1" placeholder="{{ t.player_placeholder }} 1" required>
+                    </div>
+                    <div class="player-row" id="row-2">
+                        <div class="bauhaus-avatar"><div class="shape-p2"></div></div>
+                        <span class="player-badge">{{ t.player_label }} 2</span>
+                        <input type="text" name="player_2" placeholder="{{ t.player_placeholder }} 2" required>
+                    </div>
+                    <div class="player-row" id="row-3" style="display: none;">
+                        <div class="bauhaus-avatar"><div class="shape-p3"></div></div>
+                        <span class="player-badge">{{ t.player_label }} 3</span>
+                        <input type="text" name="player_3" id="input-3" placeholder="{{ t.player_placeholder }} 3">
+                    </div>
+                    <div class="player-row" id="row-4" style="display: none;">
+                        <div class="bauhaus-avatar"><div class="shape-p4"></div></div>
+                        <span class="player-badge">{{ t.player_label }} 4</span>
+                        <input type="text" name="player_4" id="input-4" placeholder="{{ t.player_placeholder }} 4">
+                    </div>
                 </div>
-                <div class="player-row" id="row-3" style="display: none;">
-                    <span class="player-badge">{{ t.player_label }} 3</span>
-                    <input type="text" name="player_3" id="input-3" placeholder="{{ t.player_placeholder }} 3">
-                </div>
-                <div class="player-row" id="row-4" style="display: none;">
-                    <span class="player-badge">{{ t.player_label }} 4</span>
-                    <input type="text" name="player_4" id="input-4" placeholder="{{ t.player_placeholder }} 4">
-                </div>
-            </div>
-            <button type="submit" class="start-btn">{{ t.btn_start_match }}</button>
-        </form>
+                <button type="submit" class="ticket-tear-btn">
+                    <span class="t-main">{{ t.btn_start_match }}</span>
+                    <span class="t-perf"></span>
+                    <span class="t-stub">
+                        <span class="t-barcode"></span>
+                        <span>Nº314159</span>
+                    </span>
+                </button>
+            </form>
+        </div>
     </div>
 
     <script>
