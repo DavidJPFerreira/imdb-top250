@@ -2,74 +2,191 @@
 <html lang="{{ lang }}">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ t.rps_title }}</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23E6392E'%3E%3Cpath d='M2.00488 9.49979V3.99979C2.00488 3.4475 2.4526 2.99979 3.00488 2.99979H21.0049C21.5572 2.99979 22.0049 3.4475 22.0049 3.99979V9.49979C20.6242 9.49979 19.5049 10.6191 19.5049 11.9998C19.5049 13.3805 20.6242 14.4998 22.0049 14.4998V19.9998C22.0049 20.5521 21.5572 20.9998 21.0049 20.9998H3.00488C2.4526 20.9998 2.00488 20.5521 2.00488 19.9998V14.4998C3.38559 14.4998 4.50488 13.3805 4.50488 11.9998C4.50488 10.6191 3.38559 9.49979 2.00488 9.49979ZM14.0049 4.99979H4.00488V7.96755C5.4866 8.7039 6.50488 10.2329 6.50488 11.9998C6.50488 13.7666 5.4866 15.2957 4.00488 16.032V18.9998H14.0049V4.99979ZM16.0049 4.99979V18.9998H20.0049V16.032C18.5232 15.2957 17.5049 13.7666 17.5049 11.9998C17.5049 10.2329 18.5232 8.7039 20.0049 7.96755V4.99979H16.0049Z'/%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Grotesk:wght@400;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --bg-paper: #F4EEDD;
+            --bg-paper-alt: #EFECE6;
+            --red: #E6392E;
+            --yellow: #F4B41A;
+            --blue: #1B4965;
+            --black: #181818;
+        }
         * { box-sizing: border-box; }
         body {
-            background-color: #121212; color: #fff;
-            font-family: 'Segoe UI', sans-serif; text-align: center; padding: 25px 20px;
+            background-color: var(--bg-paper);
+            background-image: 
+                linear-gradient(to right, rgba(24,24,24,0.05) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(24,24,24,0.05) 1px, transparent 1px);
+            background-size: 40px 40px;
+            color: var(--black);
+            font-family: 'Space Grotesk', sans-serif; text-align: center; padding: 25px 20px 60px 20px;
         }
         .top-bar {
-            max-width: 580px; margin: 0 auto 12px auto;
+            max-width: 640px; margin: 0 auto 14px auto;
             display: flex; justify-content: flex-end; gap: 8px;
         }
         .lang-btn {
-            background: #1e1e1e; color: #ccc; border: 1px solid #444;
-            padding: 5px 10px; border-radius: 6px; text-decoration: none;
-            font-size: 0.85rem; font-weight: bold;
+            background: var(--bg-paper-alt); color: var(--black); border: 3px solid var(--black);
+            box-shadow: 3px 3px 0px var(--black); padding: 5px 12px;
+            text-decoration: none; font-family: 'Space Mono', monospace; font-size: 0.82rem; font-weight: 700;
+            transition: transform 0.15s;
         }
-        .lang-btn.active { background: #f5c518; color: #000; border-color: #f5c518; }
+        .lang-btn:hover { transform: translate(-2px, -2px) rotate(-2deg); }
+        .lang-btn.active { background: var(--yellow); color: var(--black); transform: rotate(-2deg); }
+
         .arena {
-            max-width: 580px; margin: 0 auto; background: #1e1e1e;
-            padding: 30px; border-radius: 14px; border: 1px solid #333;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+            max-width: 640px; margin: 0 auto; background: var(--bg-paper-alt);
+            padding: 32px; border: 5px solid var(--black);
+            box-shadow: 12px 12px 0px var(--black); position: relative; transform: rotate(-0.5deg);
         }
-        .stage-badge {
-            display: inline-block; background: #c92a2a; color: #fff;
-            padding: 6px 14px; border-radius: 20px; font-weight: bold;
-            margin-bottom: 12px; font-size: 0.9rem;
+        /* Stage Badge exclusivo para o Pedra-Papel-Tesoura Final (Recorte Saul Bass Vermelho/Amarelo) */
+        .stage-badge-final {
+            display: inline-block; background: var(--red); color: var(--bg-paper);
+            padding: 10px 26px; border: 3px solid var(--black);
+            box-shadow: 5px 5px 0px var(--yellow), 8px 8px 0px var(--black);
+            font-family: 'Bebas Neue', sans-serif; font-size: 1.4rem;
+            letter-spacing: 2.5px; text-transform: uppercase;
+            margin-bottom: 16px; transform: rotate(-1.5deg);
         }
-        h1 { color: #f5c518; margin: 0 0 16px 0; font-size: 1.65rem; }
+        h1 {
+            font-family: 'Bebas Neue', sans-serif; color: var(--black);
+            margin: 0 0 8px 0; font-size: 3.1rem; letter-spacing: 2px;
+            text-shadow: 3px 3px 0px var(--yellow);
+        }
         .matchup {
             display: flex; justify-content: space-around; align-items: center;
-            background: #262626; padding: 14px; border-radius: 10px; margin-bottom: 22px;
+            background: var(--bg-paper); padding: 14px; border: 4px solid var(--black);
+            box-shadow: 5px 5px 0px var(--black); margin-bottom: 22px; transform: rotate(0.7deg);
         }
-        .p-name { font-size: 1.15rem; font-weight: bold; }
-        .p1-col { color: #f5c518; }
-        .p2-col { color: #4dabf7; }
+        .p-name { font-family: 'Bebas Neue', sans-serif; font-size: 1.7rem; letter-spacing: 1px; }
+        .p1-col { color: var(--red); }
+        .p2-col { color: var(--blue); }
+
         .prompt-box {
-            background: #161616; border: 1px solid #444; border-radius: 10px;
-            padding: 20px; margin-bottom: 20px;
+            background: var(--bg-paper); border: 4px solid var(--black);
+            box-shadow: 6px 6px 0px var(--black); padding: 24px; margin-bottom: 20px; transform: rotate(-0.7deg);
         }
-        .prompt-title { font-size: 1.15rem; font-weight: bold; margin-bottom: 16px; }
-        .choices { display: flex; justify-content: center; gap: 16px; }
+        .prompt-title {
+            font-family: 'Space Mono', monospace; font-size: 1.05rem; font-weight: 700;
+            margin-bottom: 20px;
+        }
+        .choices { display: flex; justify-content: center; gap: 18px; flex-wrap: wrap; }
         .choice-btn {
-            background: #2b2b2b; border: 2px solid #555; color: #fff;
-            border-radius: 12px; padding: 16px 22px; cursor: pointer;
-            font-size: 1.05rem; font-weight: bold; transition: all 0.15s;
+            background: var(--bg-paper-alt); border: 4px solid var(--black);
+            box-shadow: 5px 5px 0px var(--black); color: var(--black);
+            padding: 18px 22px; cursor: pointer; width: 155px;
+            font-family: 'Bebas Neue', sans-serif; font-size: 1.5rem; letter-spacing: 1px;
+            transition: transform 0.1s, background 0.1s;
         }
-        .choice-btn:hover { border-color: #f5c518; background: #333; transform: translateY(-3px); }
-        .choice-icon { font-size: 2.4rem; display: block; margin-bottom: 6px; }
+        .choice-btn:nth-child(1) { background: var(--red); color: var(--bg-paper); }
+        .choice-btn:nth-child(2) { background: var(--yellow); color: var(--black); }
+        .choice-btn:nth-child(3) { background: var(--blue); color: var(--bg-paper); }
+        .choice-btn:hover { transform: translate(-3px, -3px); box-shadow: 8px 8px 0px var(--black); }
+
+        .bass-hand { width: 72px; height: 72px; display: block; margin: 0 auto 10px auto; }
+
         .result-box {
-            display: none; background: #1b4332; border: 1px solid #40916c;
-            padding: 20px; border-radius: 10px; margin-top: 15px;
+            display: none; background: var(--yellow); border: 4px solid var(--black);
+            box-shadow: 7px 7px 0px var(--black); padding: 26px; margin-top: 15px;
         }
         .draw-box {
-            display: none; background: #4a2c11; border: 1px solid #ff922b;
-            padding: 14px; border-radius: 10px; margin-bottom: 16px; font-weight: bold;
+            display: none; background: var(--red); color: var(--bg-paper);
+            border: 4px solid var(--black); box-shadow: 5px 5px 0px var(--black);
+            padding: 14px; margin-bottom: 16px; font-family: 'Space Mono', monospace; font-weight: 700;
         }
-        .btn {
-            background: #f5c518; color: #000; font-weight: bold;
-            padding: 12px 26px; border: none; border-radius: 8px;
-            font-size: 1.05rem; cursor: pointer; margin-top: 12px;
+
+        #bass-countdown {
+            display: none; position: fixed; inset: 0; z-index: 9998;
+            background: var(--black); color: var(--bg-paper);
+            flex-direction: column; align-items: center; justify-content: center;
+        }
+        #bass-countdown .giant-num {
+            font-family: 'Bebas Neue', sans-serif; font-size: 52vh; line-height: 0.85;
+            color: var(--red); text-shadow: 12px 12px 0px var(--yellow);
+            transform: rotate(-3deg);
+        }
+        #bass-countdown .cut-label {
+            font-family: 'Space Mono', monospace; font-size: 1.2rem; letter-spacing: 4px;
+            background: var(--yellow); color: var(--black); padding: 6px 18px;
+        }
+
+        /* Botão-Bilhete com Rasgão até Metade */
+        .ticket-tear-btn {
+            display: inline-flex; align-items: stretch;
+            background: transparent; border: none; padding: 0;
+            text-decoration: none; cursor: pointer;
+            perspective: 1000px; filter: drop-shadow(6px 6px 0px var(--black));
+            transition: filter 0.2s ease, transform 0.2s ease;
+        }
+        .ticket-tear-btn .t-main {
+            background:
+                radial-gradient(circle at right top, transparent 10px, var(--red) 10.5px),
+                radial-gradient(circle at right bottom, transparent 10px, var(--red) 10.5px);
+            background-size: 100% 51%;
+            background-position: top, bottom;
+            background-repeat: no-repeat;
+            color: var(--black);
+            padding: 16px 28px;
+            border: 3px solid var(--black); border-right: none;
+            display: flex; align-items: center;
+            font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 2px;
+            text-transform: uppercase;
+            transition: transform 0.35s cubic-bezier(0.23, 1, 0.32, 1);
+            transform-origin: left center;
+        }
+        .ticket-tear-btn .t-perf {
+            width: 0; border-left: 3px dashed var(--black);
+            background: var(--bg-paper); margin: 10px 0; z-index: 2;
+            transition: opacity 0.25s ease;
+        }
+        .ticket-tear-btn .t-stub {
+            background:
+                radial-gradient(circle at left top, transparent 10px, var(--red) 10.5px),
+                radial-gradient(circle at left bottom, transparent 10px, var(--red) 10.5px);
+            background-size: 100% 51%;
+            background-position: top, bottom;
+            background-repeat: no-repeat;
+            color: var(--black);
+            padding: 12px 20px;
+            border: 3px solid var(--black); border-left: none;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            font-family: 'Space Mono', monospace; font-size: 0.68rem; font-weight: 700;
+            line-height: 1.2;
+            transform-origin: top left;
+            transition: transform 0.45s cubic-bezier(0.23, 1, 0.32, 1);
+        }
+        .ticket-tear-btn .t-barcode {
+            width: 54px; height: 16px; margin-bottom: 4px;
+            background: repeating-linear-gradient(90deg, #181818 0, #181818 2px, transparent 2px, transparent 4px, #181818 4px, #181818 7px, transparent 7px, transparent 9px);
+        }
+        /* Animação de rasgar até metade */
+        .ticket-tear-btn:hover .t-main {
+            transform: rotate(-1.5deg) translateX(-3px);
+        }
+        .ticket-tear-btn:hover .t-stub {
+            transform: translateY(10px) translateX(5px) rotateZ(8deg);
+        }
+        .ticket-tear-btn:active .t-stub {
+            transform: translateY(22px) translateX(12px) rotateZ(16deg);
         }
     </style>
 </head>
 <body>
+    <div id="bass-countdown">
+        <div class="cut-label">FRAME CUT // DUEL REVEAL</div>
+        <div class="giant-num" id="countdown-num">3</div>
+    </div>
+
     <div class="top-bar">
-        <a href="/set_lang/pt" class="lang-btn {% if lang == 'pt' %}active{% endif %}">🇵🇹 PT</a>
-        <a href="/set_lang/en" class="lang-btn {% if lang == 'en' %}active{% endif %}">🇬🇧 EN</a>
-        <a href="/set_lang/es" class="lang-btn {% if lang == 'es' %}active{% endif %}">🇪🇸 ES</a>
+        <a href="/set_lang/pt" class="lang-btn {% if lang == 'pt' %}active{% endif %}">PT</a>
+        <a href="/set_lang/en" class="lang-btn {% if lang == 'en' %}active{% endif %}">EN</a>
+        <a href="/set_lang/es" class="lang-btn {% if lang == 'es' %}active{% endif %}">ES</a>
     </div>
 
     <div class="arena"
@@ -78,51 +195,64 @@
          data-p1-name="{{ p1[1] }}"
          data-p2-id="{{ p2[0] }}"
          data-p2-name="{{ p2[1] }}"
-         data-rock="✊ {{ t.rps_rock }}"
-         data-paper="✋ {{ t.rps_paper }}"
-         data-scissors="✌️ {{ t.rps_scissors }}"
          data-saved="{{ t.rps_saved }}"
          data-draw="{{ t.rps_draw }}"
          data-turn="{{ t.turn_of }}"
          data-win="{{ t.rps_duel_win }}">
 
-        <span class="stage-badge">{{ match_title }}</span>
-        <h1>✊✋✌️ {{ t.rps_title }}</h1>
-        <p style="color:#aaa; font-size:0.92rem; margin-top:0;">{{ t.rps_sub }}</p>
+        <span class="stage-badge-final">FINAL SHOWDOWN</span>
+        <h1>{{ t.rps_title }}</h1>
+        <p style="font-family:'Space Mono',monospace; font-size:0.88rem; font-weight:700; margin-top:0;">{{ t.rps_sub }}</p>
 
         <div class="matchup">
-            <div class="p-name p1-col">🎮 {{ p1[1] }}</div>
-            <div style="color:#888; font-weight:bold;">VS</div>
-            <div class="p-name p2-col">🎮 {{ p2[1] }}</div>
+            <div class="p-name p1-col">{{ p1[1] }}</div>
+            <div style="font-family:'Space Mono',monospace; font-weight:700; background:#181818; color:#F4EEDD; padding:4px 10px;">VS</div>
+            <div class="p-name p2-col">{{ p2[1] }}</div>
         </div>
 
         <div id="draw-alert" class="draw-box"></div>
 
         <div id="turn-panel" class="prompt-box">
             <div id="turn-title" class="prompt-title">
-                {{ t.turn_of }} <span style="color:#f5c518;">{{ p1[1] }}</span> {{ t.rps_choose_no_look }}
+                {{ t.turn_of }} <span style="color:var(--red);">{{ p1[1] }}</span> {{ t.rps_choose_no_look }}
             </div>
             <div class="choices">
                 <button type="button" class="choice-btn" data-move="pedra">
-                    <span class="choice-icon">✊</span>{{ t.rps_rock }}
+                    <svg class="bass-hand" viewBox="0 0 100 100" fill="#181818">
+                        <polygon points="18,42 32,20 55,18 78,26 86,52 74,88 26,88 14,62"/>
+                    </svg>
+                    {{ t.rps_rock }}
                 </button>
                 <button type="button" class="choice-btn" data-move="papel">
-                    <span class="choice-icon">✋</span>{{ t.rps_paper }}
+                    <svg class="bass-hand" viewBox="0 0 100 100" fill="#181818">
+                        <polygon points="15,50 10,18 24,16 32,44 38,8 50,8 52,42 64,10 76,12 68,46 88,24 94,34 72,88 28,88"/>
+                    </svg>
+                    {{ t.rps_paper }}
                 </button>
                 <button type="button" class="choice-btn" data-move="tesoura">
-                    <span class="choice-icon">✌️</span>{{ t.rps_scissors }}
+                    <svg class="bass-hand" viewBox="0 0 100 100" fill="#F4EEDD">
+                        <polygon points="24,88 18,52 28,6 42,10 44,48 68,8 82,16 58,54 78,62 72,88"/>
+                    </svg>
+                    {{ t.rps_scissors }}
                 </button>
             </div>
         </div>
 
+        <!-- Mostra apenas quem venceu, sem detalhes da jogada -->
         <div id="winner-panel" class="result-box">
-            <h2 id="duel-summary" style="margin:0 0 8px 0; font-size:1.2rem;"></h2>
-            <h3 id="duel-winner" style="margin:0 0 12px 0; color:#f5c518;"></h3>
+            <h3 id="duel-winner" style="margin:0 0 14px 0; font-family:'Bebas Neue',sans-serif; font-size:2.6rem; letter-spacing:1.5px; color:var(--black);"></h3>
             <form action="/session/{{ session_id }}/rps/record" method="POST">
                 <input type="hidden" name="p1_id" value="{{ p1[0] }}">
                 <input type="hidden" name="p2_id" value="{{ p2[0] }}">
                 <input type="hidden" name="winner_id" id="winner_id" value="">
-                <button type="submit" class="btn">{{ t.btn_confirm_win }}</button>
+                <button type="submit" class="ticket-tear-btn">
+                    <span class="t-main">{{ t.btn_confirm_win }}</span>
+                    <span class="t-perf"></span>
+                    <span class="t-stub">
+                        <span class="t-barcode"></span>
+                        <span>Nº314159</span>
+                    </span>
+                </button>
             </form>
         </div>
     </div>
@@ -132,11 +262,6 @@
             const arena = document.getElementById("rps-arena");
             const p1 = { id: arena.getAttribute("data-p1-id"), name: arena.getAttribute("data-p1-name") };
             const p2 = { id: arena.getAttribute("data-p2-id"), name: arena.getAttribute("data-p2-name") };
-            const icons = {
-                pedra: arena.getAttribute("data-rock"),
-                papel: arena.getAttribute("data-paper"),
-                tesoura: arena.getAttribute("data-scissors")
-            };
             const txtSaved = arena.getAttribute("data-saved");
             const txtDraw = arena.getAttribute("data-draw");
             const txtTurn = arena.getAttribute("data-turn");
@@ -147,9 +272,31 @@
             const turnPanel = document.getElementById("turn-panel");
             const drawAlert = document.getElementById("draw-alert");
             const winnerPanel = document.getElementById("winner-panel");
-            const duelSummary = document.getElementById("duel-summary");
             const duelWinner = document.getElementById("duel-winner");
             const winnerInput = document.getElementById("winner_id");
+            const countdownOverlay = document.getElementById("bass-countdown");
+            const countdownNum = document.getElementById("countdown-num");
+
+            function runBassCountdown(callback) {
+                const steps = ["3", "2", "1"];
+                const bgColors = ["#181818", "#E6392E", "#1B4965"];
+                let idx = 0;
+                countdownOverlay.style.display = "flex";
+                countdownOverlay.style.background = bgColors[0];
+                countdownNum.textContent = steps[0];
+
+                const timer = setInterval(function () {
+                    idx++;
+                    if (idx < steps.length) {
+                        countdownOverlay.style.background = bgColors[idx];
+                        countdownNum.textContent = steps[idx];
+                    } else {
+                        clearInterval(timer);
+                        countdownOverlay.style.display = "none";
+                        callback();
+                    }
+                }, 280);
+            }
 
             document.querySelectorAll(".choice-btn").forEach(function (btn) {
                 btn.addEventListener("click", function () {
@@ -157,29 +304,31 @@
                     if (p1Move === null) {
                         p1Move = move;
                         drawAlert.style.display = "none";
-                        turnTitle.innerHTML = "✅ " + txtSaved + " <span style='color:#4dabf7;'>" + p2.name + "</span>:";
+                        turnTitle.innerHTML = txtSaved + " <span style='color:var(--blue);'>" + p2.name + "</span>:";
                         return;
                     }
                     const p2Move = move;
-                    if (p1Move === p2Move) {
-                        drawAlert.textContent = txtDraw + " " + icons[p1Move] + "!";
-                        drawAlert.style.display = "block";
-                        p1Move = null;
-                        turnTitle.innerHTML = txtTurn + " <span style='color:#f5c518;'>" + p1.name + "</span>:";
-                        return;
-                    }
-                    const p1Wins = (
-                        (p1Move === "pedra" && p2Move === "tesoura") ||
-                        (p1Move === "papel" && p2Move === "pedra") ||
-                        (p1Move === "tesoura" && p2Move === "papel")
-                    );
-                    const winPlayer = p1Wins ? p1 : p2;
-                    turnPanel.style.display = "none";
-                    drawAlert.style.display = "none";
-                    duelSummary.textContent = p1.name + " (" + icons[p1Move] + ") vs " + p2.name + " (" + icons[p2Move] + ")";
-                    duelWinner.textContent = "🏆 " + winPlayer.name + " " + txtWin;
-                    winnerInput.value = winPlayer.id;
-                    winnerPanel.style.display = "block";
+                    const chosenP1 = p1Move;
+                    runBassCountdown(function () {
+                        if (chosenP1 === p2Move) {
+                            drawAlert.textContent = txtDraw;
+                            drawAlert.style.display = "block";
+                            p1Move = null;
+                            turnTitle.innerHTML = txtTurn + " <span style='color:var(--red);'>" + p1.name + "</span>:";
+                            return;
+                        }
+                        const p1Wins = (
+                            (chosenP1 === "pedra" && p2Move === "tesoura") ||
+                            (chosenP1 === "papel" && p2Move === "pedra") ||
+                            (chosenP1 === "tesoura" && p2Move === "papel")
+                        );
+                        const winPlayer = p1Wins ? p1 : p2;
+                        turnPanel.style.display = "none";
+                        drawAlert.style.display = "none";
+                        duelWinner.textContent = txtWin + " " + winPlayer.name;
+                        winnerInput.value = winPlayer.id;
+                        winnerPanel.style.display = "block";
+                    });
                 });
             });
         });

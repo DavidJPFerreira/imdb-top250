@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ t.ttt_title }}</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23E6392E'%3E%3Cpath d='M2.00488 9.49979V3.99979C2.00488 3.4475 2.4526 2.99979 3.00488 2.99979H21.0049C21.5572 2.99979 22.0049 3.4475 22.0049 3.99979V9.49979C20.6242 9.49979 19.5049 10.6191 19.5049 11.9998C19.5049 13.3805 20.6242 14.4998 22.0049 14.4998V19.9998C22.0049 20.5521 21.5572 20.9998 21.0049 20.9998H3.00488C2.4526 20.9998 2.00488 20.5521 2.00488 19.9998V14.4998C3.38559 14.4998 4.50488 13.3805 4.50488 11.9998C4.50488 10.6191 3.38559 9.49979 2.00488 9.49979ZM14.0049 4.99979H4.00488V7.96755C5.4866 8.7039 6.50488 10.2329 6.50488 11.9998C6.50488 13.7666 5.4866 15.2957 4.00488 16.032V18.9998H14.0049V4.99979ZM16.0049 4.99979V18.9998H20.0049V16.032C18.5232 15.2957 17.5049 13.7666 17.5049 11.9998C17.5049 10.2329 18.5232 8.7039 20.0049 7.96755V4.99979H16.0049Z'/%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Grotesk:wght@400;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-paper: #F4EEDD;
+            --bg-paper-alt: #EFECE6;
+            --red: #E6392E;
+            --yellow: #F4B41A;
+            --blue: #1B4965;
+            --black: #181818;
+        }
+        * { box-sizing: border-box; }
+        body {
+            background-color: var(--bg-paper);
+            background-image: 
+                linear-gradient(to right, rgba(24,24,24,0.05) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(24,24,24,0.05) 1px, transparent 1px);
+            background-size: 40px 40px;
+            color: var(--black);
+            font-family: 'Space Grotesk', sans-serif;
+            margin: 0; padding: 40px 20px 60px 20px; text-align: center;
+        }
+        .top-bar {
+            max-width: 680px; margin: 0 auto 18px auto;
+            display: flex; justify-content: flex-end; gap: 8px;
+        }
+        .lang-btn {
+            background: var(--bg-paper-alt); color: var(--black); border: 3px solid var(--black);
+            box-shadow: 3px 3px 0px var(--black); padding: 5px 12px;
+            text-decoration: none; font-family: 'Space Mono', monospace; font-size: 0.82rem; font-weight: 700;
+            transition: transform 0.15s;
+        }
+        .lang-btn:hover { transform: translate(-2px, -2px) rotate(-2deg); }
+        .lang-btn.active { background: var(--yellow); color: var(--black); transform: rotate(-2deg); }
+
+        .recap-card {
+            max-width: 680px; margin: 0 auto; background: var(--bg-paper-alt);
+            padding: 38px 32px; border: 5px solid var(--black);
+            box-shadow: 12px 12px 0px var(--black);
+            transform: rotate(-0.5deg);
+        }
+        .stage-tag {
+            display: inline-block; background: var(--blue); color: var(--bg-paper);
+            font-family: 'Space Mono', monospace; font-size: 0.8rem; font-weight: 700;
+            padding: 6px 16px; border: 3px solid var(--black);
+            box-shadow: 4px 4px 0px var(--black);
+            margin-bottom: 16px; transform: rotate(1.5deg);
+        }
+        h1 {
+            font-family: 'Bebas Neue', sans-serif; font-size: 3.2rem; letter-spacing: 2px;
+            margin: 0 0 12px 0; color: var(--black);
+            text-shadow: 3px 3px 0px var(--yellow);
+            transform: rotate(-1deg);
+        }
+        .sub-desc {
+            font-family: 'Space Mono', monospace; font-size: 0.88rem; font-weight: 700;
+            color: var(--black); margin: 0 0 24px 0;
+        }
+        .filters-grid {
+            display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px;
+            margin-bottom: 32px; text-align: left;
+        }
+        @media (max-width: 560px) { .filters-grid { grid-template-columns: 1fr; } }
+        .filter-box {
+            background: var(--bg-paper); border: 3px solid var(--black);
+            box-shadow: 5px 5px 0px var(--black); padding: 14px 16px;
+        }
+        .filter-box:nth-child(odd) { transform: rotate(-0.8deg); }
+        .filter-box:nth-child(even) { transform: rotate(0.8deg); }
+        .filter-box span {
+            display: block; font-family: 'Space Mono', monospace; font-size: 0.72rem;
+            color: var(--blue); font-weight: 700; text-transform: uppercase; margin-bottom: 4px;
+        }
+        .filter-box strong {
+            font-family: 'Bebas Neue', sans-serif; font-size: 1.5rem; letter-spacing: 1px;
+            color: var(--black);
+        }
+
+        /* Botão-Bilhete com Rasgão até Metade */
+        .ticket-tear-btn {
+            display: inline-flex; align-items: stretch;
+            background: transparent; border: none; padding: 0;
+            text-decoration: none; cursor: pointer;
+            perspective: 1000px; filter: drop-shadow(6px 6px 0px var(--black));
+            transition: filter 0.2s ease, transform 0.2s ease;
+        }
+        .ticket-tear-btn .t-main {
+            background:
+                radial-gradient(circle at right top, transparent 10px, var(--red) 10.5px),
+                radial-gradient(circle at right bottom, transparent 10px, var(--red) 10.5px);
+            background-size: 100% 51%;
+            background-position: top, bottom;
+            background-repeat: no-repeat;
+            color: var(--black);
+            padding: 16px 28px;
+            border: 3px solid var(--black); border-right: none;
+            display: flex; align-items: center;
+            font-family: 'Bebas Neue', sans-serif; font-size: 1.75rem; letter-spacing: 2px;
+            text-transform: uppercase;
+            transition: transform 0.35s cubic-bezier(0.23, 1, 0.32, 1);
+            transform-origin: left center;
+        }
+        .ticket-tear-btn .t-perf {
+            width: 0; border-left: 3px dashed var(--black);
+            background: var(--bg-paper); margin: 10px 0; z-index: 2;
+            transition: opacity 0.25s ease;
+        }
+        .ticket-tear-btn .t-stub {
+            background:
+                radial-gradient(circle at left top, transparent 10px, var(--red) 10.5px),
+                radial-gradient(circle at left bottom, transparent 10px, var(--red) 10.5px);
+            background-size: 100% 51%;
+            background-position: top, bottom;
+            background-repeat: no-repeat;
+            color: var(--black);
+            padding: 12px 20px;
+            border: 3px solid var(--black); border-left: none;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            font-family: 'Space Mono', monospace; font-size: 0.68rem; font-weight: 700;
+            line-height: 1.2;
+            transform-origin: top left;
+            transition: transform 0.45s cubic-bezier(0.23, 1, 0.32, 1);
+        }
+        .ticket-tear-btn .t-barcode {
+            width: 54px; height: 16px; margin-bottom: 4px;
+            background: repeating-linear-gradient(90deg, #181818 0, #181818 2px, transparent 2px, transparent 4px, #181818 4px, #181818 7px, transparent 7px, transparent 9px);
+        }
+        /* Animação de rasgar até metade */
+        .ticket-tear-btn:hover .t-main {
+            transform: rotate(-1.5deg) translateX(-3px);
+        }
+        .ticket-tear-btn:hover .t-stub {
+            transform: translateY(10px) translateX(5px) rotateZ(8deg);
+        }
+        .ticket-tear-btn:active .t-stub {
+            transform: translateY(22px) translateX(12px) rotateZ(16deg);
+        }
+    </style>
+</head>
+<body>
+    <div class="top-bar">
+        <a href="/set_lang/pt" class="lang-btn {% if lang == 'pt' %}active{% endif %}">PT</a>
+        <a href="/set_lang/en" class="lang-btn {% if lang == 'en' %}active{% endif %}">EN</a>
+        <a href="/set_lang/es" class="lang-btn {% if lang == 'es' %}active{% endif %}">ES</a>
+    </div>
+
+    <div class="recap-card">
+        <div class="stage-tag">FILTER RESOLUTION</div>
+        <h1>{{ t.ttt_excl_filter }} {{ won_cat_label }}</h1>
+        <p class="sub-desc">{{ t.ttt_mixed_info }}</p>
+
+        <div class="filters-grid">
+            <div class="filter-box">
+                <span>{{ t.col_year }}</span>
+                <strong>{{ t.val_all_m if merged.decades == 'ANY' else merged.decades }}</strong>
+            </div>
+            <div class="filter-box">
+                <span>{{ t.col_dur }}</span>
+                <strong>{{ t.val_all_f if merged.duration == 'ANY' else merged.duration }}</strong>
+            </div>
+            <div class="filter-box">
+                <span>{{ t.col_rat }}</span>
+                <strong>IMDb {{ merged.rating }}+</strong>
+            </div>
+            <div class="filter-box">
+                <span>{{ t.col_gen }}</span>
+                <strong>{{ t.val_all_m if merged.genres == 'ANY' else tr_genres(merged.genres, lang) }}</strong>
+            </div>
+        </div>
+
+        <a href="/session/{{ session_id }}/movies" class="ticket-tear-btn">
+            <span class="t-main">{{ t.btn_go_movies }}</span>
+            <span class="t-perf"></span>
+            <span class="t-stub">
+                <span class="t-barcode"></span>
+                <span>Nº314159</span>
+            </span>
+        </a>
+    </div>
+</body>
+</html>

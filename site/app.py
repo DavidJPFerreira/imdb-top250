@@ -506,35 +506,13 @@ def apply_winner_filter(session_id, winner_id):
     }
     won_cat_label = cat_names.get(winning_category, winning_category)
 
-    return render_template_string("""
-    <!DOCTYPE html>
-    <html lang="{{ lang }}">
-    <head>
-        <meta charset="UTF-8">
-        <title>{{ winner_name }} - {{ t.ttt_title }}</title>
-        <style>
-            body { background:#121212; color:#fff; font-family:'Segoe UI',sans-serif; text-align:center; padding:60px 20px; }
-            .card { max-width:560px; margin:0 auto; background:#1e1e1e; padding:32px; border-radius:14px; border:1px solid #f5c518; }
-            h1 { color:#f5c518; margin-top:0; }
-            .btn { display:inline-block; background:#f5c518; color:#000; font-weight:bold; padding:14px 28px; border-radius:8px; text-decoration:none; margin-top:20px; }
-        </style>
-    </head>
-    <body>
-        <div class="card">
-            <h1>🏆 {{ winner_name }} {{ t.ttt_champ_title }}</h1>
-            <p>{{ t.ttt_excl_filter }} <strong>{{ won_cat_label }}</strong></p>
-            <p style="color:#aaa; font-size:0.92rem;">{{ t.ttt_mixed_info }}</p>
-            <p style="color:#eee;">
-                <strong>{{ t.col_year }}:</strong> {{ t.val_all_m if merged.decades == 'ANY' else merged.decades }} |
-                <strong>{{ t.col_dur }}:</strong> {{ t.val_all_f if merged.duration == 'ANY' else merged.duration }} |
-                <strong>{{ t.col_rat }}:</strong> ⭐ {{ merged.rating }}+ |
-                <strong>{{ t.col_gen }}:</strong> {{ t.val_all_m if merged.genres == 'ANY' else tr_genres(merged.genres, lang) }}
-            </p>
-            <a href="/session/{{ session_id }}/movies" class="btn">{{ t.btn_go_movies }}</a>
-        </div>
-    </body>
-    </html>
-    """, winner_name=winner_name, won_cat_label=won_cat_label, merged=merged, session_id=session_id)
+    return render_template(
+        "ttt_winner.html",
+        winner_name=winner_name,
+        won_cat_label=won_cat_label,
+        merged=merged,
+        session_id=session_id,
+    )
 
 
 def expand_adjacent_decades(dec_list):
@@ -1108,11 +1086,11 @@ def admin_dashboard():
                         combat_spec["rating"][rat_val] += 1
 
             cat_labels = [
-                ("genres", "🎭 Género"),
-                ("decades", "📅 Ano (Décadas)"),
-                ("duration", "⏱️ Duração"),
-                ("certificate", "🔞 Restrição de Idade"),
-                ("rating", "⭐ Pontuação IMDb"),
+                ("genres", "Género"),
+                ("decades", "Ano (Décadas)"),
+                ("duration", "Duração"),
+                ("certificate", "Restrição de Idade"),
+                ("rating", "Pontuação IMDb"),
             ]
             max_comb = max(combat_cats_count.values()) or 1
             combat_overview = [

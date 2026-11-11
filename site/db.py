@@ -17,15 +17,31 @@ _db_pool = None
 def _get_pool():
     global _db_pool
     if _db_pool is None:
-        _db_pool = pool.ThreadedConnectionPool(
-            minconn=1,
-            maxconn=int(os.getenv("DB_MAX_CONN", "20")),
-            host=os.getenv("DB_HOST", "localhost").strip(),
-            port=os.getenv("DB_PORT", "5432").strip(),
-            dbname=os.getenv("DB_NAME", "movie_game").strip(),
-            user=os.getenv("DB_USER", "postgres").strip(),
-            password=os.getenv("DB_PASSWORD", "").strip(),
-        )
+        database_url = os.getenv("DATABASE_URL", "").strip()
+        max_conn = int(os.getenv("DB_MAX_CONN", "10"))
+
+        if database_url:
+            # Garante que usa SSL caso uses a Connection String direta do Neon
+            if "sslmode=" not in database_url and "localhost" not in database_url:
+                sep = "&" if "?" in database_url else "?"
+                database_url = f"{database_url}{sep}sslmode=require"
+            _db_pool = pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=max_conn,
+                dsn=database_url
+            )
+        else:
+            host = os.getenv("DB_HOST", "localhost").strip()
+            _db_pool = pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=max_conn,
+                host=host,
+                port=os.getenv("DB_PORT", "5432").strip(),
+                dbname=os.getenv("DB_NAME", "neondb").strip(),
+                user=os.getenv("DB_USER", "postgres").strip(),
+                password=os.getenv("DB_PASSWORD", "").strip(),
+                sslmode=os.getenv("DB_SSLMODE", "disable" if host == "localhost" else "require"),
+            )
     return _db_pool
 
 
