@@ -3,6 +3,7 @@ import os
 import random
 import time
 from collections import Counter
+
 from flask import Flask, redirect, render_template, render_template_string, request, session, url_for
 from translations import GENRE_MAP, TRANSLATIONS, translate_genres_str
 from db import (
@@ -12,6 +13,8 @@ from db import (
     get_db_connection,
     get_dynamic_filter_options,
 )
+from dotenv import load_dotenv
+load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "chave_secreta_imdb_game_2026")
