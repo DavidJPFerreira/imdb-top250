@@ -152,6 +152,11 @@ TRANSLATIONS = {
         "win_country": "País de Origem:",
         "btn_imdb": "Ver Página Oficial no IMDb",
         "btn_new_game": "Jogar Nova Partida",
+
+        "seo_desc": "Jogo de escolha de filmes para grupos de 2 a 4 pessoas. Decide o filme da noite com filtros e minijogos de forma justa e divertida.",
+        "seo_keys": "jogo de filmes, que filme ver, imdb top 250, roleta de filmes, escolher filme em grupo, saul bass",
+        "og_title": "Jogo de Escolha de Filmes — IMDb Top 250",
+        "og_desc": "Acabaram as discussões sobre o que ver hoje à noite. Joguem juntos no mesmo ecrã!",
     },
     "en": {
         # Landing & Setup
@@ -273,6 +278,11 @@ TRANSLATIONS = {
         "win_country": "Country of Origin:",
         "btn_imdb": "View Official Page on IMDb",
         "btn_new_game": "Play New Match",
+
+        "seo_desc": "Movie picker game for groups of 2 to 4 people. Decide tonight's movie with filters and minigames in a fair and fun way.",
+        "seo_keys": "movie game, what movie to watch, imdb top 250, movie roulette, pick a movie together, saul bass",
+        "og_title": "Movie Picker Game — IMDb Top 250",
+        "og_desc": "No more arguing over what to watch tonight. Play together on the same screen!",
     },
     "es": {
         # Landing & Setup
@@ -394,5 +404,10 @@ TRANSLATIONS = {
         "win_country": "País de Origen:",
         "btn_imdb": "Ver Página Oficial en IMDb",
         "btn_new_game": "Jugar Nueva Partida",
+
+        "seo_desc": "Juego de elección de películas para grupos de 2 a 4 personas. Decide la película de la noche con filtros y minijuegos de forma justa y divertida.",
+        "seo_keys": "juego de películas, qué película ver, imdb top 250, ruleta de películas, elegir película en grupo, saul bass",
+        "og_title": "Selector de Películas — IMDb Top 250",
+        "og_desc": "Se acabaron las discusiones sobre qué ver esta noche. ¡Jueguen juntos en la misma pantalla!"
     },
 }
