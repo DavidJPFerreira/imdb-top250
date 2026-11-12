@@ -961,7 +961,7 @@ def admin_login():
 
     if request.method == "POST":
         entered_pw = request.form.get("password", "")
-        expected_pw = os.getenv("ADMIN_PASSWORD", "admin123").strip()
+        expected_pw = os.getenv("ADMIN_PASSWORD").strip()
         if hmac.compare_digest(entered_pw, expected_pw):
             _ADMIN_FAILED_ATTEMPTS.pop(client_ip, None)
             session["is_admin_authenticated"] = True
