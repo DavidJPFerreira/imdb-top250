@@ -4,6 +4,7 @@ from pathlib import Path
 import psycopg2
 from psycopg2 import pool
 from dotenv import load_dotenv
+import time
 
 BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / ".env" if (BASE_DIR / ".env").exists() else BASE_DIR.parent / ".env"
@@ -78,10 +79,29 @@ class _PooledConnection:
         self.close()
 
 
-def get_connection():
+def get_connection(retries=3, delay=1.5):
+    """
+    Tenta obter uma ligação válida do pool. Se a base de dados (Neon)
+    estiver adormecida e a ligação velha falhar, espera e tenta de novo.
+    """
     dpool = _get_pool()
-    return _PooledConnection(dpool, dpool.getconn())
-
+    for attempt in range(retries):
+        try:
+            raw_conn = dpool.getconn()
+            # Teste rápido para ver se a ligação "acordou" o servidor e ainda está viva
+            with raw_conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            return _PooledConnection(dpool, raw_conn)
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            # Se a ligação estava fechada, descarta-a e tenta de novo após um compasso de espera
+            try:
+                dpool.putconn(raw_conn, close=True)
+            except Exception:
+                pass
+            if attempt < retries - 1:
+                time.sleep(delay)  # Dá tempo ao Neon para arrancar (escala para zero)
+            else:
+                raise
 
 @contextmanager
 def get_db_connection():
@@ -89,10 +109,17 @@ def get_db_connection():
     try:
         yield conn
     except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         raise
     finally:
-        conn.close()
+        # Tenta fechar de forma segura
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 # Alias para evitar qualquer ImportError entre get_db_conn e get_db_connection
