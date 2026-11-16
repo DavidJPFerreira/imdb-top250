@@ -3,8 +3,7 @@ import os
 import random
 import time
 from collections import Counter
-
-from flask import Flask, redirect, render_template, render_template_string, request, session, url_for
+from flask import Flask, redirect, render_template, render_template_string, request, session, url_for, Response
 from translations import GENRE_MAP, TRANSLATIONS, translate_genres_str
 from db import (
     ALL_DURATION_CODES,
@@ -1185,6 +1184,11 @@ def admin_dashboard():
         most_disliked=most_disliked,
         recent_sessions=recent_sessions,
     )
+
+@app.route('/robots.txt')
+def robots():
+    robots_content = "User-agent: *\nAllow: /\n"
+    return Response(robots_content, mimetype="text/plain")
 
 
 if __name__ == "__main__":
